@@ -8,6 +8,7 @@ __pycache__/
 !*.env.example
 config/qq-only.env
 config/*.plist
+config/private/
 data/
 runtime/
 runtime-*/

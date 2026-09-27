@@ -16,6 +16,7 @@ for (const entry of entries) {
   if (/^(?:data|runtime[^/]*|workspaces|vendor|downloads|backups|apps|build)\//.test(path)
     || /(^|\/)(?:node_modules|\.venv|__pycache__)\//.test(path)
     || /(?:\.session-map\.json|\.(?:log|db|sqlite3?|pid|sock|pyc))$/.test(path)
+    || path.startsWith("config/private/")
     || (path.startsWith("config/") && (path.endsWith(".plist") || path === "config/qq-only.env"))
     || /(^|\/)\.env(?:\..*)?$/.test(path) && !path.endsWith(".example")) {
     errors.push(path+": forbidden deployment state");

@@ -29,7 +29,7 @@ import { AgentDispatchStore } from "./storage/agent-dispatch-store.js";
 import { StickerLabelSettingsStore } from "./storage/sticker-label-settings-store.js";
 import { QzoneStore } from "./qq/qzone-store.js";
 import { SubscriptionStore } from "./storage/subscription-store.js";
-import { validateRuntimeConfig } from "./security/runtime-config.js";
+import { resolvePersonaFiles, validateRuntimeConfig } from "./security/runtime-config.js";
 
 const sourceDir = fileURLToPath(new URL(".", import.meta.url));
 const projectDir = resolve(sourceDir, "..");
@@ -50,8 +50,9 @@ const personaStatePath = join(dataDir, "persona-state.json");
 const relationshipMemoryPath = join(dataDir, "relationship-memory.json");
 const personaRulesPath = join(dataDir, "persona-rules.json");
 const personaOwnerStylePath = join(dataDir, "persona-owner-style.json");
-const personaCorePath = join(projectDir, "persona", "core.json");
-const personaExamplesPath = join(projectDir, "persona", "examples.json");
+const { corePath: personaCorePath, examplesPath: personaExamplesPath } = resolvePersonaFiles(
+  projectDir, process.env.CODEX_REMOTE_CONTACT_PERSONA_DIR
+);
 const legacyContextPath = join(sharedDataDir, "qq-owner-agent-context.json");
 const mediaRoot = join(runtimeDir, "qq-media");
 const stickerLibraryDir = join(runtimeDir, "qq-stickers");

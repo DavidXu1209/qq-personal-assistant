@@ -5,9 +5,19 @@ PROJECT_DIR="${CODEX_REMOTE_CONTACT_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pw
 ENV_FILE="$PROJECT_DIR/config/qq-only.env"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 if [ -f "$ENV_FILE" ]; then
-  set -a
-  source "$ENV_FILE"
-  set +a
+  BOOTSTRAP_NODE="${CODEX_REMOTE_CONTACT_NODE_PATH:-}"
+  if [ -z "$BOOTSTRAP_NODE" ] || [ ! -x "$BOOTSTRAP_NODE" ]; then
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
+      if [ -x "$candidate" ]; then BOOTSTRAP_NODE="$candidate"; break; fi
+    done
+  fi
+  if [ -z "$BOOTSTRAP_NODE" ] || [ ! -x "$BOOTSTRAP_NODE" ]; then
+    echo "Node.js is required to load the private configuration." >&2
+    exit 1
+  fi
+  RUNTIME_ENV_EXPORTS="$("$BOOTSTRAP_NODE" --env-file="$ENV_FILE" "$PROJECT_DIR/scripts/export-runtime-env.mjs")"
+  eval "$RUNTIME_ENV_EXPORTS"
+  unset RUNTIME_ENV_EXPORTS
 fi
 COLIMA_PROFILE="${CODEX_REMOTE_CONTACT_COLIMA_PROFILE:-snowluma}"
 SNOWLUMA_CONTAINER="${CODEX_REMOTE_CONTACT_SNOWLUMA_CONTAINER:-snowluma}"

@@ -8,6 +8,13 @@ CONTENTS="$APP_ROOT/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 BINARY="$MACOS/CodexRemoteContactClient"
+FRONTEND="$PROJECT_DIR/modules/web-console/public"
+
+# One editable frontend for the browser and native client. Never write back
+# bundled assets over the live WebUI during a client build.
+for asset in client.html client.css client.js; do
+  [[ -f "$FRONTEND/$asset" ]] || { echo "Missing frontend asset: $asset" >&2; exit 1; }
+done
 
 mkdir -p "$MACOS" "$RESOURCES"
 
@@ -23,12 +30,9 @@ xcrun swiftc \
   "$ROOT/Sources/CodexRemoteContactClient.swift"
 
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
-cp "$ROOT/Resources/client.html" "$RESOURCES/client.html"
-cp "$ROOT/Resources/client.css" "$RESOURCES/client.css"
-cp "$ROOT/Resources/client.js" "$RESOURCES/client.js"
-cp "$ROOT/Resources/client.html" "$PROJECT_DIR/modules/web-console/public/client.html"
-cp "$ROOT/Resources/client.css" "$PROJECT_DIR/modules/web-console/public/client.css"
-cp "$ROOT/Resources/client.js" "$PROJECT_DIR/modules/web-console/public/client.js"
+for asset in client.html client.css client.js; do
+  cp "$FRONTEND/$asset" "$RESOURCES/$asset"
+done
 
 chmod +x "$BINARY"
 

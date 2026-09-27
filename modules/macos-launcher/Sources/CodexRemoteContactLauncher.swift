@@ -12,9 +12,13 @@ private let projectDir: String = {
     return buildURL.deletingLastPathComponent().path
 }()
 private let hubPort = 3789
-private let plistPath = "\(projectDir)/config/local.codexremotecontact.chat-hub.plist"
+private let plistPath: String = {
+    let installed = "\(NSHomeDirectory())/Library/LaunchAgents/local.codexremotecontact.chat-hub.plist"
+    return FileManager.default.fileExists(atPath: installed)
+        ? installed : "\(projectDir)/config/local.codexremotecontact.chat-hub.plist"
+}()
 private let clientAppPath = "\(projectDir)/build/CodexRemoteContactClient.app"
-private let llbotAppPath = "\(projectDir)/modules/qq-llbot/LLBot.app"
+private let qqRecoveryJob = "gui/\(getuid())/local.codexremotecontact.qq-runtime"
 private let keepAwakePidPath = "\(projectDir)/data/keep-awake.pid"
 private let brightnessStatePath = "\(projectDir)/data/previous-brightness.txt"
 private let backlightOffScriptPath = "\(projectDir)/modules/system-control/backlight-off-keep-awake.command"
@@ -60,7 +64,7 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
         appMenu.addItem(NSMenuItem(
-            title: "退出 CodexRemoteContact Launcher",
+            title: "退出 WorkBuddy QQ 网关启动器",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         ))
@@ -93,7 +97,7 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "CodexRemoteContact Launcher"
+        window.title = "WorkBuddy QQ 网关启动器"
         window.center()
         window.isReleasedWhenClosed = false
 
@@ -104,7 +108,7 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
         root.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 22, right: 24)
         root.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = NSTextField(labelWithString: "codexremotecontact")
+        let title = NSTextField(labelWithString: "WorkBuddy QQ 网关")
         title.font = .systemFont(ofSize: 28, weight: .bold)
 
         let subtitle = NSTextField(labelWithString: "远程联系中枢")
@@ -121,7 +125,7 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
         root.addArrangedSubview(statusLabel)
 
         let grid = NSGridView(views: [
-            [makeButton("启动 Hub + 客户端", action: #selector(startHubAndClient)), makeButton("打开 LLBot", action: #selector(openLLBot))],
+            [makeButton("启动 Hub + 客户端", action: #selector(startHubAndClient)), makeButton("恢复 QQ 后台", action: #selector(recoverQQ))],
             [makeButton("黑屏后台运行", action: #selector(startDisplayOff)), makeButton("停止黑屏后台", action: #selector(stopKeepAwake))],
             [makeButton("关闭背光", action: #selector(turnBacklightOff)), makeButton("恢复背光", action: #selector(restoreBacklight))],
             [makeButton("打开控制台网页", action: #selector(openHubWeb)), makeButton("一键退出", action: #selector(stopAll))]
@@ -133,7 +137,7 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
         }
         root.addArrangedSubview(grid)
 
-        let note = NSTextField(labelWithString: "LLBot 仍会按原来的方式自己处理账号登录；这个启动器只负责打开和关闭本机组件。")
+        let note = NSTextField(labelWithString: "QQ 由独立恢复服务维护。恢复只启动已有 SnowLuma 环境，不重装容器或清除登录。退出控制台不会退出 QQ。")
         note.font = .systemFont(ofSize: 12)
         note.textColor = .tertiaryLabelColor
         note.lineBreakMode = .byWordWrapping
@@ -174,9 +178,12 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func openLLBot() {
-        runTask("打开 LLBot") {
-            _ = run("/usr/bin/open", [llbotAppPath])
+    @objc private func recoverQQ() {
+        runTask("恢复 QQ 后台") {
+            let result = run("/bin/launchctl", ["kickstart", qqRecoveryJob])
+            if result.status != 0 {
+                throw LauncherError.message("QQ 恢复服务未就绪，请先安装项目的登录后自启动配置。")
+            }
         }
     }
 
@@ -218,7 +225,6 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
             stopKeepAwakeProcess()
             stopHub()
             _ = run("/usr/bin/osascript", ["-e", "tell application \"CodexRemoteContactClient\" to quit"], allowFailure: true)
-            _ = run("/usr/bin/osascript", ["-e", "tell application \"LLBot\" to quit"], allowFailure: true)
         }
     }
 
@@ -249,11 +255,12 @@ final class CodexRemoteContactLauncherApp: NSObject, NSApplicationDelegate {
 
     private func refreshStatus() {
         let hub = isPortListening(hubPort) ? "Hub 在线" : "Hub 未启动"
-        let llbot = isAppRunning("LLBot") ? "LLBot 已打开" : "LLBot 未打开"
+        let qqRecovery = run("/bin/launchctl", ["print", qqRecoveryJob], allowFailure: true).status == 0
+            ? "QQ 恢复已配置" : "QQ 恢复未配置"
         let client = isAppRunning("CodexRemoteContactClient") ? "客户端已打开" : "客户端未打开"
         let awake = isKeepAwakeRunning() ? "黑屏后台已开启" : "黑屏后台未开启"
         let backlight = FileManager.default.fileExists(atPath: brightnessStatePath) ? "背光已关闭" : "背光正常"
-        statusLabel.stringValue = "\(hub)\n\(llbot)  ·  \(client)\n\(awake)  ·  \(backlight)"
+        statusLabel.stringValue = "\(hub)\n\(qqRecovery)  ·  \(client)\n\(awake)  ·  \(backlight)"
     }
 }
 
@@ -264,7 +271,7 @@ private func startHubIfNeeded() throws {
     _ = run("/bin/launchctl", ["bootstrap", domain, plistPath])
     Thread.sleep(forTimeInterval: 1.0)
     if !isPortListening(hubPort) {
-        throw LauncherError.message("Chat Hub 没有启动，请查看 \(projectDir)/chat-hub.err.log")
+        throw LauncherError.message("Chat Hub 没有启动，请查看 \(projectDir)/runtime/logs 中的错误日志")
     }
 }
 

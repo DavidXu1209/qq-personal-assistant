@@ -16,10 +16,10 @@ Override with / 可通过环境变量覆盖：
 CODEX_CLI_PATH=/path/to/codex
 ```
 
-Persistent QQ group threads run from / QQ 群持久会话工作目录：
+兼容引擎的 QQ 群持久会话使用与 WorkBuddy 相同的隔离工作区：
 
 ```text
-workspaces/codex-cli/
+runtime/group-workspaces/<groupId>/
 ```
 
 Each QQ group maps to one persistent Codex thread. Thread IDs and pending

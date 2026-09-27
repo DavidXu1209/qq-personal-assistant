@@ -60,7 +60,7 @@ WorkBuddy 通过当前会话专属 MCP 读取消息和执行 QQ 操作，不直�
 
 ## 环境要求
 
-- macOS，Node.js 20+，Python 3.10+。
+- macOS，Node.js 20.6+，Python 3.10+。
 - 已安装、已登录 WorkBuddy / CodeBuddy CLI，模型调用消耗自己的账号额度。
 - 单独安装、登录 SnowLuma 或兼容 OneBot 的 QQ 桥；不附带这些产品或登录数据。
 - 容器文件发送和自动恢复需 Docker、Colima 和已经存在的 SnowLuma 容器，恢复脚本不会创建或重装它。
@@ -111,6 +111,8 @@ OneBot HTTP 事件上报地址为 http://127.0.0.1:3789/api/onebot/event，需�
 面板地址：http://127.0.0.1:3789/client.html，首次填入 Hub 令牌。缺少身份或凭证会拒绝启动。默认鉴权开启，不允许非 loopback 地址免鉴权。
 
 自启动前检查 env 的 Colima profile、Docker context、容器名和可执行路径。**已有同名部署时不要同时启动第二套**，默认服务标签和端口相同。详见 [部署说明](docs/DEPLOYMENT.md)。
+
+已有本地部署的源码更新、私人人格覆盖和各功能编辑入口见 [本地可编辑结构](docs/LOCAL_CUSTOMIZATION.md)。界面只维护一份源文件，实际账号与人格不写入公开模板。
 
 ## 不登录也能看演示
 

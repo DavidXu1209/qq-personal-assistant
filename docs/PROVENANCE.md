@@ -4,28 +4,24 @@
 
 ## 对比基准和口径
 
-比对上游基准提交 [8412335](https://github.com/Epic0522/Codex-Remote-Contact/commit/8412335abbe38cd0633aff7cc1a6486283b7defc)。当前发布快照共有 119 个文件：
+比对上游基准提交 [8412335](https://github.com/Epic0522/Codex-Remote-Contact/commit/8412335abbe38cd0633aff7cc1a6486283b7defc)。当前发布快照共有 115 个文件：
 
 | 分类 | 文件数 | 含义 |
 | --- | ---: | --- |
-| 与上游同路径且字节完全相同 | 19 | 直接沿用 |
-| 上游已有同路径、当前内容不同 | 19 | 改写或扩展，包含配置与文档 |
-| 上游没有同路径 | 81 | 新增模块、测试、公开配置、文档和页面图 |
+| 与上游同路径且字节完全相同 | 13 | 直接沿用 |
+| 上游已有同路径、当前内容不同 | 18 | 改写或扩展，包含配置与文档 |
+| 上游没有同路径 | 84 | 新增模块、测试、公开配置、文档和页面图 |
 
 这是文件级盘点，不是原创代码百分比、贡献比例或逐行版权鉴定。新增文件也可能包含从上游旧文件拆分或改写的逻辑；修改文件不代表全部内容都原创。截图和通用演示数据计入新增文件。
 
-## 直接沿用的 19 个文件
+## 直接沿用的 13 个文件
 
 - modules/mac-client/Resources/Info.plist
 - modules/mac-client/Sources/CodexRemoteContactClient.swift
-- modules/mac-client/script/build_and_run.sh
 - modules/mac-client/start-client.command
 - modules/macos-launcher/Info.plist
-- modules/macos-launcher/Sources/CodexRemoteContactLauncher.swift
 - modules/macos-launcher/Sources/RoundIcon.swift
 - modules/macos-launcher/build-launcher.command
-- modules/shadowrocket/README.md
-- modules/shadowrocket/shadowrocket-node-control.command
 - modules/system-control/README.md
 - modules/system-control/backlight-off-keep-awake.command
 - modules/system-control/backlight-restore.command
@@ -33,12 +29,10 @@
 - modules/system-control/keep-awake-display-off.command
 - modules/system-control/src/codexremotecontact-backlight.c
 - modules/system-control/stop-keep-awake.command
-- modules/web-console/README.md
-- modules/web-console/public/styles.css
 
-主要是 Mac 客户端壳、启动器、旧系统控制与代理辅助模块。其中一些是历史兼容模块，不是 WorkBuddy 核心链路。
+主要是 Mac 客户端壳、图标构建与本机系统控制。这些辅助模块仍有实际引用，不是 WorkBuddy 核心链路。
 
-## 改写或扩展的 19 个文件
+## 改写或扩展的 18 个文件
 
 - .gitignore、README.md、package.json
 - config/local.codexremotecontact.chat-hub.plist.example
@@ -46,13 +40,15 @@
 - modules/chat-hub-start.command
 - modules/codex-cli/README.md
 - modules/install-launchd-plist.command
-- modules/mac-client/Resources/client.css、client.html、client.js
-- modules/qq-llbot/README.md
+- modules/mac-client/script/build_and_run.sh
+- modules/macos-launcher/Sources/CodexRemoteContactLauncher.swift
 - modules/start-all.command、modules/stop-chat-hub.command
-- modules/web-console/public/client.css、client.html、client.js、index.html
+- modules/web-console/README.md、public/client.css、client.html、client.js、index.html
 - src/server.js
 
 包括网关入口、前端资源、后台启动配置与说明。这些不是完全独立于上游的新实现。
+
+本次整理移除了旧 LLBot 说明、与网关无关的代理控制辅助模块、未引用样式表及 Mac 客户端的三份重复前端源码；改为单一网页源构建客户端。私人配置和人格可覆盖公开模板，详见 [本地可编辑结构](LOCAL_CUSTOMIZATION.md)。Codex 兼容适配及仍被使用的会话保留管理器未按名字误删。
 
 ## 后续新增的主要能力
 

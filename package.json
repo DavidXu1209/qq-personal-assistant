@@ -10,6 +10,6 @@
     "audit:public": "node scripts/audit-public.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.6"
   }
 }
