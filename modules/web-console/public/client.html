@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>QQ WorkBuddy Agent Gateway</title>
+    <link rel="stylesheet" href="/client.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <div>
+            <p class="eyebrow">WORKBUDDY REMOTE CONTACT</p>
+            <h1>QQ Agent 网关</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="qzoneButton" class="button ghost topbar-button" type="button" aria-pressed="false">QQ 空间</button>
+          <button id="stickerGalleryButton" class="button ghost topbar-button" type="button" aria-pressed="false">
+            表情展示台 <span id="stickerGalleryButtonCount" class="button-count">0</span>
+          </button>
+          <label class="dispatch-control" title="关闭后仍接收和保存 QQ 消息，但不会启动新的 Codex 请求">
+            <span class="dispatch-copy"><strong id="agentDispatchLabel">Agent 已开启</strong><small>消息始终记录</small></span>
+            <input id="agentDispatchToggle" type="checkbox" checked aria-label="Agent 总开关" />
+            <span class="dispatch-switch" aria-hidden="true"></span>
+          </label>
+          <span id="connectionBadge" class="badge neutral" role="status">正在连接</span>
+          <button id="refreshButton" class="icon-button" type="button" aria-label="刷新状态" title="刷新状态">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <section id="workspace" class="workspace">
+        <aside class="sidebar panel" aria-label="QQ Agent 会话与通知源" tabindex="0">
+          <div class="sidebar-heading">
+            <div>
+              <p class="eyebrow">CONVERSATIONS</p>
+              <h2>会话与通知源</h2>
+            </div>
+            <span id="groupCount" class="quiet-count">0</span>
+          </div>
+
+          <div class="navigation-scroll">
+            <section class="nav-section">
+              <div class="nav-section-title"><span>Agent 群聊</span><span id="agentGroupCount">0</span></div>
+              <nav id="groupList" class="group-list" aria-label="选择 Agent QQ 群"></nav>
+            </section>
+
+            <section class="nav-section">
+              <div class="nav-section-title">
+                <span>Agent 私聊</span>
+                <button id="addPrivateButton" class="mini-button" type="button">添加</button>
+              </div>
+              <form id="privateForm" class="compact-form" hidden>
+                <label>QQ 号<input id="privateUserId" inputmode="numeric" pattern="[0-9]{5,14}" placeholder="100000001" required /></label>
+                <label>备注<input id="privateDisplayName" placeholder="可选" /></label>
+                <div class="compact-actions"><button class="button primary" type="submit">保存</button><button id="cancelPrivateButton" class="button ghost" type="button">取消</button></div>
+              </form>
+              <nav id="privateList" class="group-list" aria-label="选择 Agent QQ 私聊"></nav>
+            </section>
+
+            <section class="nav-section">
+              <div class="nav-section-title"><span>只读通知源</span><span id="sourceCount">0</span></div>
+              <nav id="sourceList" class="group-list" aria-label="查看只读通知来源群"></nav>
+            </section>
+          </div>
+
+          <details id="sessionDetails" class="session-details">
+            <summary>当前 Agent 会话详情</summary>
+            <dl class="session-grid">
+              <div><dt>threadId</dt><dd id="threadId">—</dd></div>
+              <div><dt>会话占用</dt><dd id="threadLockState">检查中</dd></div>
+              <div><dt>创建时间</dt><dd id="threadCreatedAt">—</dd></div>
+              <div><dt>最近活动</dt><dd id="lastActivityAt">—</dd></div>
+              <div><dt>pending</dt><dd id="pendingCount">0</dd></div>
+              <div><dt>worker</dt><dd id="workerState">idle</dd></div>
+              <div><dt>trigger</dt><dd id="triggerState">—</dd></div>
+            </dl>
+            <div class="stack-actions">
+              <button id="sessionButton" class="button ghost" type="button">查看会话 ID</button>
+              <button id="retryButton" class="button ghost" type="button">重试待处理消息</button>
+              <button id="resetButton" class="button danger" type="button">新建当前会话</button>
+            </div>
+          </details>
+
+          <details id="agentSettingsDetails" class="session-details agent-settings-details">
+            <summary>会话参数 <span id="agentSettingsSummary">—</span></summary>
+            <form id="agentSettingsForm" class="agent-settings-form">
+              <label for="agentModel">模型
+                <select id="agentModel" required></select>
+              </label>
+              <label for="agentReasoningEffort">思考强度
+                <select id="agentReasoningEffort" required></select>
+              </label>
+              <label for="agentContextTokenLimit">自动压缩阈值
+                <select id="agentContextTokenLimit" required></select>
+              </label>
+              <label for="agentWorkingMode">工作模式
+                <select id="agentWorkingMode" required></select>
+              </label>
+              <label for="agentPermissionMode">执行权限（独立设置）
+                <select id="agentPermissionMode" required></select>
+                <small class="field-note">与工作模式分开保存；Agent 模式按此权限执行，Plan / Ask 仍强制只读。</small>
+              </label>
+              <label class="settings-switch" for="agentCalendarRemindersEnabled">
+                <span><strong>通知自动化权限</strong><small>允许这个会话把通知写入“学习 / 社团 / 活动”日历和“待办”提醒列表</small></span>
+                <input id="agentCalendarRemindersEnabled" type="checkbox" role="switch" checked />
+              </label>
+              <div id="agentModeExplanation" class="parameter-explanation" aria-live="polite"></div>
+              <p id="agentSettingsHint" class="form-hint">保存后从下一轮起生效；历史 thread 不变。</p>
+              <p id="agentSettingsStatus" class="form-status" role="status" aria-live="polite"></p>
+              <button id="saveAgentSettingsButton" class="button primary full-button" type="submit" disabled>保存会话参数</button>
+            </form>
+          </details>
+
+          <details id="personaDetails" class="session-details agent-settings-details persona-details">
+            <summary>老代人格 <span id="personaSummary">—</span></summary>
+            <form id="personaForm" class="agent-settings-form persona-form">
+              <div class="persona-facts" aria-label="当前会话人格状态">
+                <span>熟悉度<strong id="personaFamiliarity">—</strong></span>
+                <span>累计互动<strong id="personaInteractionCount">0</strong></span>
+                <span>认识成员<strong id="personaMemberCount">0</strong></span>
+              </div>
+              <p class="field-note">人格核心来自问卷；这里只调整当前群或私聊的关系备注与临时状态，不会改其他会话。</p>
+              <label for="personaEnergy">精力 <output id="personaEnergyValue">—</output>
+                <input id="personaEnergy" type="range" min="0.1" max="0.95" step="0.01" />
+              </label>
+              <label for="personaSociability">社交意愿 <output id="personaSociabilityValue">—</output>
+                <input id="personaSociability" type="range" min="0.1" max="0.95" step="0.01" />
+              </label>
+              <label for="personaPlayfulness">玩笑倾向 <output id="personaPlayfulnessValue">—</output>
+                <input id="personaPlayfulness" type="range" min="0.1" max="0.95" step="0.01" />
+              </label>
+              <label for="personaPatience">耐心 <output id="personaPatienceValue">—</output>
+                <input id="personaPatience" type="range" min="0.1" max="0.95" step="0.01" />
+              </label>
+              <label for="personaNotes">当前会话补充
+                <textarea id="personaNotes" rows="3" maxlength="1200" placeholder="每行一条，例如：这个群熟人多，可以更随意"></textarea>
+              </label>
+              <label for="personaGlobalRules">所有会话长期规则
+                <textarea id="personaGlobalRules" rows="3" maxlength="6000" placeholder="每行一条；也可由 OWNER 对老代说“记住：……”"></textarea>
+              </label>
+              <p class="field-note">这里的规则只接受 OWNER 修改，并注入所有群聊、私聊和 QQ 空间任务。</p>
+              <section class="persona-learning" aria-label="自动学习 OWNER 的表达方式">
+                <div class="persona-learning-head">
+                  <span>自动学习你的表达</span>
+                  <strong id="personaOwnerStyleSummary">尚未开始</strong>
+                </div>
+                <ul id="personaOwnerStyleRules" class="persona-owner-style-rules">
+                  <li>继续正常聊天，样本足够后会自动生成表达规则。</li>
+                </ul>
+                <p class="field-note">只统计 OWNER 消息的长度、断句、标点和已有口头禅；不保存正文，也不学习聊天事实、权限或其他成员的风格。</p>
+              </section>
+              <details class="persona-preview-details">
+                <summary>查看实际人格注入</summary>
+                <pre id="personaPromptPreview" class="persona-prompt-preview">—</pre>
+                <p class="field-note">这是当前会话下一轮会使用的人格部分；本轮消息、权限和工具说明会在触发时另外插入。</p>
+              </details>
+              <p id="personaStatus" class="form-status" role="status" aria-live="polite"></p>
+              <button id="savePersonaButton" class="button primary full-button" type="submit" disabled>保存人格状态</button>
+              <div class="persona-feedback">
+                <label for="personaFeedbackNote">评价上一条回复（可选）
+                  <input id="personaFeedbackNote" maxlength="240" placeholder="例如：太像客服了 / 这次节奏很好" />
+                </label>
+                <div class="compact-actions">
+                  <button id="personaPositiveButton" class="button ghost" type="button">符合老代人格</button>
+                  <button id="personaNegativeButton" class="button ghost" type="button">不符合老代人格</button>
+                </div>
+              </div>
+            </form>
+          </details>
+
+          <details id="stickerLabelDetails" class="session-details agent-settings-details">
+            <summary>表情识别 <span id="stickerLabelSummary">hy3 · 临时会话</span></summary>
+            <form id="stickerLabelForm" class="agent-settings-form">
+              <label for="stickerLabelModel">识图模型
+                <select id="stickerLabelModel" required></select>
+              </label>
+              <div class="parameter-explanation">
+                <p><strong>不积累上下文</strong>每批新表情都会新建一次独立只读会话；识图可与聊天回复并行，若回复仍在进行，识别结果会等回复发送完成后再入库。临时会话和工作区随后自动清理。</p>
+              </div>
+              <p id="stickerLabelStatus" class="form-status" role="status" aria-live="polite"></p>
+              <button id="saveStickerLabelButton" class="button primary full-button" type="submit" disabled>保存识图模型</button>
+            </form>
+          </details>
+
+          <details id="subscriptionDetails" class="session-details subscription-details">
+            <summary>通知源订阅 <span id="subscriptionCount">0</span></summary>
+            <div id="subscriptionList" class="subscription-list"></div>
+            <button id="addSubscriptionButton" class="button ghost full-button" type="button">+ 添加通知源</button>
+            <form id="subscriptionForm" class="subscription-form" hidden>
+              <input id="subscriptionId" type="hidden" />
+              <label>通知来源<select id="subscriptionSource" required></select></label>
+              <p class="field-note">通知按以下规则自动处理，并向当前会话发送摘要。</p>
+              <label>消息范围<select id="subscriptionIntake"><option value="ADMIN_ONLY">群管触发（附带上下文）</option><option value="ALL">全部消息</option></select></label>
+              <label id="subscriptionDelayLabel">最后消息后等待（分钟）<input id="subscriptionDelay" type="number" min="0.1" max="1440" step="0.1" value="10" required /></label>
+              <label class="checkbox-label"><input id="subscriptionEnabled" type="checkbox" checked />启用订阅</label>
+              <div class="compact-actions"><button class="button primary" type="submit">保存订阅</button><button id="cancelSubscriptionButton" class="button ghost" type="button">取消</button></div>
+            </form>
+          </details>
+
+          <div class="service-list" aria-label="服务状态">
+            <div><span>Hub</span><strong id="hubStatus">检查中</strong></div>
+            <div><span>QQ / OneBot</span><strong id="oneBotStatus">检查中</strong></div>
+            <div><span>WorkBuddy</span><strong id="codexStatus">空闲</strong></div>
+          </div>
+        </aside>
+
+        <section class="conversation-panel panel">
+          <header class="conversation-heading">
+            <div class="conversation-title">
+              <p id="selectedGroupId" class="eyebrow">QQ AGENT</p>
+              <h2 id="selectedGroupName">选择一个会话</h2>
+              <p id="activityStatus" class="activity-status" role="status">等待消息</p>
+            </div>
+            <div class="conversation-actions">
+              <label id="replyControl" class="dispatch-control reply-control" hidden>
+                <span class="dispatch-copy"><strong id="replyEnabledLabel">允许回复</strong><small id="replyEnabledHint">仅影响当前会话</small></span>
+                <input id="replyEnabledToggle" type="checkbox" role="switch" aria-label="允许回复当前会话" checked />
+                <span class="dispatch-switch" aria-hidden="true"></span>
+              </label>
+              <button id="cancelButton" class="button danger" type="button" disabled>立即终止</button>
+            </div>
+          </header>
+
+          <div class="conversation-wrap">
+            <div id="conversation" class="conversation" role="log" aria-label="当前会话活动消息" tabindex="0"></div>
+            <button id="jumpToLatest" class="jump-latest" type="button" hidden>
+              回到最新消息
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+          </div>
+
+          <p id="groupError" class="error-text" role="alert" hidden></p>
+
+          <form id="composer" class="composer">
+            <label class="sr-only" for="promptInput">向当前 Agent 会话发送 OWNER 消息</label>
+            <textarea id="promptInput" rows="2" placeholder="以 OWNER 身份向当前 Agent 会话发送消息……" required></textarea>
+            <button id="sendButton" class="button primary" type="submit">发送</button>
+          </form>
+        </section>
+      </section>
+
+      <section id="qzonePanel" class="sticker-gallery panel" aria-labelledby="qzoneTitle" hidden>
+        <header class="gallery-heading">
+          <div>
+            <p class="eyebrow">QQ SPACE · LAO DAI</p>
+            <h2 id="qzoneTitle">QQ 空间自动动态</h2>
+            <p class="gallery-subtitle">手动发动态对你的所有 Agent 会话开放；定时任务沿用下方选定会话的上下文。</p>
+          </div>
+          <button id="closeQzoneButton" class="button ghost" type="button">返回会话</button>
+        </header>
+        <div class="gallery-scroll qzone-scroll">
+          <div id="qzoneBanner" class="recognition-status idle" role="status" aria-live="polite"></div>
+          <form id="qzoneForm" class="qzone-form">
+            <p class="qzone-visibility">可见范围：所有人可见。手动和定时新发的动态都一样；已有动态不会自动改动。</p>
+            <label for="qzoneTarget">定时任务使用的 Agent 会话</label>
+            <select id="qzoneTarget" name="target"><option value="">暂不绑定</option></select>
+            <p class="qzone-help">你直接触发受管理的可写会话后，老代可酌情发动态；其他人不能授权。自动任务只使用这里选定的会话。</p>
+            <label class="qzone-check"><input id="qzoneAutoPost" type="checkbox" /> <span>早 / 中 / 晚让老代自行决定是否发动态</span></label>
+            <p id="qzonePostTimes" class="qzone-help"></p>
+            <label class="qzone-check"><input id="qzoneAutoEngage" type="checkbox" /> <span>每小时查看新好友动态，按喜好决定点赞或评论</span></label>
+            <p id="qzoneLastSeenTime" class="qzone-help"></p>
+            <p class="qzone-help">北京时间 07:00–次日 01:00 整点检查；每条新动态可独立点赞、普通评论或跳过。SnowLuma 暂不支持读取或回复指定评论。</p>
+            <div class="qzone-actions"><button id="saveQzoneButton" class="button primary" type="submit">保存 QQ 空间设置</button><span id="qzoneSaveStatus" role="status" aria-live="polite"></span></div>
+          </form>
+          <section class="qzone-history" aria-label="最近任务记录"><h3>最近任务</h3><div id="qzoneEvents"></div></section>
+        </div>
+      </section>
+
+      <section id="stickerGallery" class="sticker-gallery panel" aria-labelledby="stickerGalleryTitle" hidden>
+        <header class="gallery-heading">
+          <div>
+            <p class="eyebrow">NATIVE QQ STICKERS</p>
+            <h2 id="stickerGalleryTitle">表情展示台</h2>
+            <p class="gallery-subtitle">查看表情、识别进度和黑名单；可恢复收录或彻底忘记</p>
+          </div>
+          <button id="closeStickerGalleryButton" class="button ghost" type="button">返回会话</button>
+        </header>
+        <div class="gallery-scroll">
+          <section class="gallery-summary" aria-label="表情库状态">
+            <article><span>已入库</span><strong id="stickerReadyCount">0</strong></article>
+            <article><span>正在识别</span><strong id="stickerRecognizingCount">0</strong></article>
+            <article><span>等待入库</span><strong id="stickerCommitCount">0</strong></article>
+            <article><span>识图模型</span><strong id="stickerGalleryModel">—</strong></article>
+          </section>
+          <div id="stickerRecognitionStatus" class="recognition-status idle" role="status" aria-live="polite"></div>
+          <div id="stickerCurationStatus" class="recognition-status idle" role="status" aria-live="polite">每天 05:00 检查表情库；超过 100 个时筛选保留 80 个。</div>
+          <p id="stickerGalleryActionStatus" class="gallery-action-status" role="status" aria-live="polite"></p>
+          <div class="gallery-library-switch" role="group" aria-label="选择表情分区">
+            <button id="stickerLibraryButton" class="button ghost selected" type="button" aria-pressed="true">表情库 <span id="stickerLibraryCount" class="button-count">0</span></button>
+            <button id="stickerBlacklistButton" class="button ghost" type="button" aria-pressed="false">黑名单 <span id="stickerBlacklistCount" class="button-count">0</span></button>
+          </div>
+          <p id="stickerLibraryHelp" class="gallery-subtitle gallery-library-help"></p>
+          <div id="stickerGalleryGrid" class="sticker-grid" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

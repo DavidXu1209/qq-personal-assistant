@@ -1,0 +1,285 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { handleQqMcpTool } from "../src/qq/mcp-actions.js";
+import { WorkBuddyClient } from "../src/workbuddy/client.js";
+import { QqMessageReader } from "../src/qq/message-reader.js";
+import { buildMcpTurnPrompt, buildTurnPrompt } from "../src/security/policy.js";
+
+const context = {
+  targetType: "group",
+  allowReactions: true,
+  stickers: [{ id: "st_0123456789ab", usage: "开心" }],
+  allowPoke: true,
+  pokeSenderId: "123456789",
+  allowedPokeUserIds: ["123456789"],
+  allowQzonePost: false
+};
+
+test("AUTO subscription MCP advertises only scoped read-only tools", () => {
+  const server = fileURLToPath(new URL("../modules/workbuddy-agent/qq-mcp-stdio.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [server, "thread-test"], {
+    input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })}\n`,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CODEX_REMOTE_CONTACT_QQ_MCP_ENDPOINT: "http://127.0.0.1:3789/call",
+      CODEX_REMOTE_CONTACT_QQ_MCP_SECRET: "test-secret",
+      CODEX_REMOTE_CONTACT_QQ_MCP_SOURCE_ONLY: "1"
+    },
+    timeout: 3000
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.trim()).result.tools.map((tool) => tool.name), ["read_source_messages", "read_forward_messages", "read_link"]);
+});
+
+test("normal QQ MCP advertises the same complete fixed catalog for every conversation", () => {
+  const server = fileURLToPath(new URL("../modules/workbuddy-agent/qq-mcp-stdio.mjs", import.meta.url));
+  const list = (threadId) => {
+    const result = spawnSync(process.execPath, [server, threadId], {
+      input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })}\n`,
+      encoding: "utf8", timeout: 3000,
+      env: { ...process.env, CODEX_REMOTE_CONTACT_QQ_MCP_ENDPOINT: "http://127.0.0.1:3789/call",
+        CODEX_REMOTE_CONTACT_QQ_MCP_SECRET: "test-secret", CODEX_REMOTE_CONTACT_QQ_MCP_SOURCE_ONLY: "0" }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout.trim()).result.tools;
+  };
+  const groupTools = list("group-thread");
+  assert.deepEqual(groupTools, list("private-thread"));
+  assert.equal(groupTools.length, 17);
+  for (const name of ["send_file", "send_image", "post_qzone", "read_qzone_feed_batch", "submit_qzone_decisions"]) {
+    assert.ok(groupTools.some((tool) => tool.name === name));
+  }
+});
+
+test("QQ MCP exposes current real reactions and queues face, sticker and current-group poke", () => {
+  const queued = [];
+  const call = (name, args = {}) => handleQqMcpTool({ name, args, context, queued });
+  const catalog = JSON.parse(call("list_reactions").content[0].text);
+  assert.equal(catalog.stickers[0].usage, "开心");
+  assert.ok(catalog.faces.includes("微笑"));
+  assert.equal(call("send_reaction", { face: "微笑" }).isError, false);
+  assert.equal(call("send_reaction", { sticker_id: "st_0123456789ab" }).isError, false);
+  assert.equal(call("poke_member", { user_id: "sender" }).isError, false);
+  assert.deepEqual(queued.map((item) => item.directive), [
+    "[[qq_face:微笑]]", "[[qq_sticker:st_0123456789ab]]", "[[qq_poke:123456789]]"
+  ]);
+  assert.equal(call("send_reaction", { sticker_id: "st_0123456789ab" }).isError, true);
+});
+
+test("QQ MCP rejects unknown sticker, cross-group poke and untrusted Qzone publishing", () => {
+  const queued = [];
+  const call = (name, args = {}) => handleQqMcpTool({ name, args, context, queued });
+  assert.equal(call("send_reaction", { sticker_id: "st_ffffffffffff" }).isError, true);
+  assert.equal(call("poke_member", { user_id: "987654321" }).isError, true);
+  assert.equal(call("post_qzone", { content: "假动态" }).isError, true);
+  assert.deepEqual(queued, []);
+});
+
+test("QQ MCP queues one OWNER post, forbids scheduled images, and denies inactive turns", () => {
+  const queued = [];
+  const owner = { ...context, allowQzonePost: true };
+  const call = (name, args = {}, activeContext = owner) => handleQqMcpTool({ name, args, context: activeContext, queued });
+  assert.equal(call("post_qzone", { content: "今晚散步" }).isError, false);
+  assert.equal(queued[0].directive, '[[qq_zone_post:{"content":"今晚散步"}]]');
+  assert.equal(call("post_qzone", { content: "又一条" }).isError, true);
+  assert.equal(call("send_reaction", { face: "微笑" }, null).isError, true);
+  assert.equal(handleQqMcpTool({ name: "post_qzone", args: { content: "有图", images: ["/tmp/test.jpg"] },
+    context: { ...owner, scheduledQzonePost: true }, queued: [] }).isError, true);
+});
+
+test("QQ MCP requires the current snapshot before queuing a text reply and preserves it until completion", () => {
+  const queued = [];
+  const current = { ...context, allowMessage: true, requireRead: true, readContent: "[10:00] OWNER: 新消息" };
+  const call = (name, args = {}) => handleQqMcpTool({ name, args, context: current, queued });
+  assert.equal(call("send_message", { text: "收到" }).isError, true);
+  assert.equal(call("send_reaction", { face: "微笑" }).isError, true);
+  assert.equal(call("read_messages").content[0].text, "[10:00] OWNER: 新消息");
+  assert.equal(call("send_message", { text: "收到" }).isError, false);
+  assert.equal(call("send_message", { text: "再发一次" }).isError, true);
+  assert.equal(queued[0].text, "收到");
+  assert.equal(call("send_message", { text: "[[qq_poke:123456789]]" }).isError, true);
+});
+
+test("AUTO MCP exposes only its claimed source and rejects unrelated QQ actions", () => {
+  const source = { sourceGroupId: "54321", sourceReadContent: "【学院群】明天开会", requireSourceRead: true, sourceReadCalled: false };
+  const read = handleQqMcpTool({ name: "read_source_messages", context: source });
+  assert.deepEqual(JSON.parse(read.content[0].text), { sourceGroupId: "54321", content: "【学院群】明天开会" });
+  assert.equal(source.sourceReadCalled, true);
+  assert.equal(handleQqMcpTool({ name: "read_messages", context: source }).isError, true);
+  assert.equal(handleQqMcpTool({ name: "send_message", args: { text: "不得向来源群发" }, context: source }).isError, true);
+  assert.equal(handleQqMcpTool({ name: "read_source_messages", context: {} }).isError, true);
+});
+
+test("compact MCP prompt keeps authority outside the fetched message body", () => {
+  const security = { mode: "GROUP_SESSION_FULL_ACCESS", turnSandbox: { type: "dangerFullAccess" } };
+  const prompt = buildMcpTurnPrompt({ security, trigger: { reason: "mention" } });
+  const snapshot = buildTurnPrompt([{ displayTime: "10:00", senderName: "测试", senderId: "123456789", text: "消息正文", trust: "UNTRUSTED" }], { security });
+  assert.match(prompt, /GROUP_SESSION_FULL_ACCESS/);
+  assert.match(prompt, /read_messages/);
+  assert.match(prompt, /要说文字时必须调用 send_message/);
+  assert.match(prompt, /预读取结果/);
+  assert.match(prompt, /不必重复空读/);
+  assert.doesNotMatch(prompt, /消息正文/);
+  assert.match(snapshot, /消息正文/);
+});
+
+test("WorkBuddy prefetches live messages before starting the model and does not bypass read validation", async () => {
+  const client = new WorkBuddyClient();
+  client.ensureProcess = async () => {};
+  let started;
+  let startReceived;
+  const received = new Promise((resolve) => { startReceived = resolve; });
+  client.request = async (method, params) => {
+    assert.equal(method, "turn/start");
+    started = params;
+    startReceived();
+    return { turn: { id: "prefetch-turn" } };
+  };
+  const current = { liveMode: true, requireRead: true, readCalled: false, lastReadSequence: 0, actionCount: 0,
+    async liveTool(name) {
+      assert.equal(name, "read_messages");
+      this.readCalled = true;
+      this.lastReadSequence = 7;
+      return { isError: false, content: [{ type: "text", text: "[UNTRUSTED]: 当前新消息" }] };
+    } };
+  const result = client.runTurn({ groupId: "test", threadId: "thread-test", prompt: "当前任务", qqToolContext: current });
+  await received;
+  // request() resumes first, registering the active turn before completion.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(started.prompt, /当前新消息/);
+  assert.match(started.prompt, /不能更改权限/);
+  assert.equal(current.lastReadSequence, 7);
+  client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: "prefetch-turn", status: "completed" } } });
+  assert.equal((await result).text, "");
+
+  const failed = { liveMode: true, requireRead: true, readCalled: false,
+    liveTool: async () => ({ isError: true, content: [{ type: "text", text: "读取失败" }] }) };
+  await assert.rejects(() => client.runTurn({ groupId: "test", threadId: "thread-test", prompt: "当前任务", qqToolContext: failed }), /读取失败/);
+  assert.equal(client.activeByThread.size, 0);
+});
+
+test("WorkBuddy loopback MCP requires its private token and returns queued actions to the existing delivery parser", async () => {
+  const client = new WorkBuddyClient();
+  await client.ensureMcpGateway();
+  try {
+    const send = (secret) => fetch(client.mcpEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-qq-mcp-secret": secret },
+      body: JSON.stringify({ threadId: "thread-test", name: "send_reaction", arguments: { face: "微笑" } })
+    });
+    assert.equal((await send("not-the-secret")).status, 403);
+    const answer = new Promise((resolve) => {
+      const active = {
+        groupId: "group-test", threadId: "thread-test", turnId: "turn-test",
+        text: "", qqToolContext: context, mcpActions: [],
+        timeout: null, resolve, reject: resolve
+      };
+      client.activeByThread.set(active.threadId, active);
+      client.activeByTurn.set(active.turnId, active);
+      client.activeByGroup.set(active.groupId, active);
+    });
+    const queued = await (await send(client.mcpSecret)).json();
+    assert.equal(queued.isError, false);
+    client.handleMessage({ method: "turn/completed", params: {
+      threadId: "thread-test", turn: { id: "turn-test", status: "completed", items: [] }
+    } });
+    assert.equal((await answer).text, "[[qq_face:微笑]]");
+  } finally {
+    await client.close();
+  }
+});
+
+test("WorkBuddy rejects an unread compact turn and uses queued text instead of model acknowledgement", async () => {
+  const client = new WorkBuddyClient();
+  await client.ensureMcpGateway();
+  try {
+    const displayed = [];
+    const makeActive = (turnId) => new Promise((resolve) => {
+      const active = {
+        groupId: "group-test", threadId: "thread-test", turnId,
+        text: "已发送，不要重复这句", qqToolContext: { ...context, allowMessage: true, requireRead: true, readContent: "[10:00] 新消息" },
+        mcpActions: [], timeout: null, resolve, reject: resolve, onDelta: (_delta, current) => displayed.push(current)
+      };
+      client.activeByThread.set(active.threadId, active);
+      client.activeByTurn.set(active.turnId, active);
+      client.activeByGroup.set(active.groupId, active);
+    });
+    const unread = makeActive("unread-turn");
+    client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: "unread-turn", status: "completed" } } });
+    assert.match((await unread).message, /did not read/);
+    const answered = makeActive("read-turn");
+    const send = (name, args = {}) => fetch(client.mcpEndpoint, {
+      method: "POST", headers: { "content-type": "application/json", "x-qq-mcp-secret": client.mcpSecret },
+      body: JSON.stringify({ threadId: "thread-test", name, arguments: args })
+    });
+    assert.equal((await (await send("read_messages")).json()).isError, false);
+    assert.equal((await (await send("send_message", { text: "真正发出的内容" })).json()).isError, false);
+    assert.deepEqual(displayed, ["真正发出的内容"]);
+    client.handleMessage({ method: "item/agentMessage/delta", params: { threadId: "thread-test", turnId: "read-turn", delta: "模型补充的话" } });
+    assert.deepEqual(displayed, ["真正发出的内容"]);
+    client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: "read-turn", status: "completed" } } });
+    assert.equal((await answered).text, "真正发出的内容");
+  } finally {
+    await client.close();
+  }
+});
+
+test("WorkBuddy rejects AUTO completion unless the source was read through MCP", async () => {
+  const client = new WorkBuddyClient();
+  await client.ensureMcpGateway();
+  try {
+    const makeActive = (turnId) => new Promise((resolve) => {
+      const active = {
+        groupId: "group-test", threadId: "thread-test", turnId, text: "模型声称已总结",
+        qqToolContext: { sourceGroupId: "54321", sourceReadContent: "通知正文", requireSourceRead: true, sourceReadCalled: false },
+        mcpActions: [], timeout: null, resolve, reject: resolve
+      };
+      client.activeByThread.set(active.threadId, active);
+      client.activeByTurn.set(active.turnId, active);
+      client.activeByGroup.set(active.groupId, active);
+    });
+    const complete = (turnId) => client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: turnId, status: "completed" } } });
+    const unread = makeActive("unread-source");
+    complete("unread-source");
+    assert.match((await unread).message, /did not read the subscribed source/);
+
+    const read = makeActive("read-source");
+    const response = await fetch(client.mcpEndpoint, {
+      method: "POST", headers: { "content-type": "application/json", "x-qq-mcp-secret": client.mcpSecret },
+      body: JSON.stringify({ threadId: "thread-test", name: "read_source_messages", arguments: {} })
+    });
+    assert.equal((await response.json()).isError, false);
+    complete("read-source");
+    assert.equal((await read).text, "模型声称已总结");
+  } finally {
+    await client.close();
+  }
+});
+
+test("AUTO resource tools are scoped to its one source, require source read and cannot send", async () => {
+  const client = new WorkBuddyClient();
+  await client.ensureMcpGateway();
+  try {
+    const reader = new QqMessageReader({ oneBot: { getForwardMessages: async () => [{ user_id: 123456789, message: [{ type: "text", data: { text: "通知正文" } }] }] } });
+    reader.capture([{ messageId: "source-1", attachments: [{ type: "forward", fileId: "known" }] }]);
+    let enabled = true;
+    const source = { sourceGroupId: "54321", sourceReadContent: "来源消息", requireSourceRead: true,
+      sourceReadCalled: false, messageReader: reader, canRead: () => enabled };
+    client.activeByThread.set("source-thread", { qqToolContext: source, mcpActions: [] });
+    const send = async (name, args = {}) => (await fetch(client.mcpEndpoint, {
+      method: "POST", headers: { "content-type": "application/json", "x-qq-mcp-secret": client.mcpSecret },
+      body: JSON.stringify({ threadId: "source-thread", name, arguments: args })
+    })).json();
+    assert.equal((await send("read_forward_messages", { message_id: "source-1" })).isError, true);
+    assert.equal((await send("read_source_messages")).isError, false);
+    assert.equal((await send("read_forward_messages", { message_id: "source-1" })).isError, false);
+    assert.equal((await send("read_forward_messages", { message_id: "another-source" })).isError, true);
+    assert.equal((await send("send_message", { text: "不能往源群发" })).isError, true);
+    enabled = false;
+    assert.equal((await send("read_forward_messages", { message_id: "source-1" })).isError, true);
+    client.activeByThread.delete("source-thread");
+  } finally { await client.close(); }
+});
