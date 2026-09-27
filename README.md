@@ -50,19 +50,13 @@
 
 ## 架构
 
-~~~text
-QQ / SnowLuma / OneBot
-        ↓ 事件回调
-pending + 媒体缓存 + 只读来源引用
-        ↓ 每个目标串行队列
-WorkBuddy 适配器 → Python SDK → 持久 thread
-        ↕ 当前会话专属 qq_gateway MCP
-权限校验 → QQ 发送确认 → 提交 cutoff
-        ↓
-网页状态快照 + 实时推送
-~~~
+![WorkBuddy QQ Agent 网关架构：消息入口、逐目标队列、持久会话与受控 MCP 工具](docs/architecture.png)
+
+[查看可编辑矢量原图](docs/architecture.svg)。图中蓝线为消息 / 会话流，绿虚线为控制或工具请求与结果，灰线为后台状态与扩展模块。
 
 长期上下文由引擎 thread 保存，网关只保留活动消息、发送收据和必要订阅引用。
+
+WorkBuddy 通过当前会话专属 MCP 读取消息和执行 QQ 操作，不直接持有 QQ 接口凭证。网关负责校验身份、权限与发送目标；只读来源不能接收回复，全部订阅目标送达后才清理被引用的通知。
 
 ## 环境要求
 
