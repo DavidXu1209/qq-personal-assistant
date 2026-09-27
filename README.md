@@ -1,8 +1,8 @@
 # WorkBuddy QQ Agent 网关
 
-**这是为 WorkBuddy 定制的 QQ Agent 网关，不是通用聊天机器人，也不是以 Codex 为主的接入器。**把本机 WorkBuddy Agent 接入 QQ，每个群聊、私聊拥有独立持久会话；在网页里查看实时输出、调整模型与权限、管理通知订阅和表情包。
+这是为 WorkBuddy 定制的 QQ Agent 网关，不是通用聊天机器人，也不是以 Codex 为主的接入器。把本机 WorkBuddy Agent 接入 QQ，每个群聊、私聊拥有独立持久会话；在网页里查看实时输出、调整模型与权限、管理通知订阅和表情包。
 
-本仓库独立发布，不是 GitHub fork。代码基于 [Epic0522/Codex-Remote-Contact](https://github.com/Epic0522/Codex-Remote-Contact) 扩展，默认引擎、MCP 工具、持久会话、权限与部署流程均围绕 WorkBuddy 设计；Codex 适配仅作为兼容路径保留，不代表两者功能完全一致。**上游尚未声明许可证：公开源码不等同于已取得完整开源许可。**见 [来源清单](docs/PROVENANCE.md) 和 [许可证说明](LICENSE-NOTICE.md)。
+本仓库独立发布，不是 GitHub fork。代码基于 [Epic0522/Codex-Remote-Contact](https://github.com/Epic0522/Codex-Remote-Contact) 扩展，默认引擎、MCP 工具、持久会话、权限与部署流程均围绕 WorkBuddy 设计；Codex 适配仅作为兼容路径保留，不代表两者功能完全一致。上游尚未声明许可证：公开源码不等同于已取得完整开源许可。见 [来源清单](docs/PROVENANCE.md) 和 [许可证说明](LICENSE-NOTICE.md)。
 
 ## 页面展示
 
@@ -152,7 +152,7 @@ modules/workbuddy-agent/.venv/bin/python test/workbuddy-bridge-recovery.test.py
 npm run audit:public
 ~~~
 
-测试使用合成身份和临时目录，无需 QQ、不调用真实模型、不发布动态或改日历。CI 覆盖 Linux 和 macOS；真实 QQ、Apple 应用和上游 CLI 集成需在自己的环境验收。
+测试使用合成身份和临时目录，无需 QQ、不调用真实模型、不发布动态或改日历。CI 在 Linux 验证可移植逻辑，macOS 额外运行依赖系统 lsof 和 sips 的两项集成测试；这两项在 Linux 明确跳过，并不表示网关可完整部署到 Linux。真实 QQ、Apple 应用和上游 CLI 集成需在自己的环境验收。
 
 | 目录 | 内容 |
 | --- | --- |

@@ -36,7 +36,9 @@ test("a live VM hostagent prevents all runtime marker modifications", async (t) 
   assert.deepEqual((await readdir(f.instanceDir)).sort(), ["disk", "ha.pid", "vz.pid"]);
 });
 
-test("actual stale Unix sockets are backed up and preserved for recovery", async (t) => {
+test("actual stale Unix sockets are backed up and preserved for recovery", {
+  skip: process.platform !== "darwin" && "macOS integration requires /usr/sbin/lsof"
+}, async (t) => {
   const f = await fixture(t);
   const path = join(f.instanceDir, "ha.sock");
   const temporary = join(f.instanceDir, "disconnected.sock");

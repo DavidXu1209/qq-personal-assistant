@@ -326,7 +326,9 @@ test("exact notice filtering preserves look-behind, changes, short fragments and
   assert.equal(recentNotificationReceipts(receipts, START + 1000).length, 256);
 });
 
-test("WorkBuddy bridge compresses accumulated images below its shared request budget", async (t) => {
+test("WorkBuddy bridge compresses accumulated images below its shared request budget", {
+  skip: process.platform !== "darwin" && "macOS image compression integration requires /usr/bin/sips"
+}, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "crc-workbuddy-images-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const first = join(directory, "first.bmp");
