@@ -1186,8 +1186,11 @@ test("sticker vision runs beside a reply but waits for reply delivery before adm
   await Promise.all([stickerStarted, replyStarted]);
 
   releaseSticker();
-  for (let attempt = 0; attempt < 50 && stickerManager.publicState().awaitingCommit !== 1; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  // Staging persists to disk before exposing awaitingCommit. A fixed number of
+  // event-loop ticks can finish before filesystem work on a shared CI runner.
+  const stagingDeadline = Date.now() + 5000;
+  while (stickerManager.publicState().awaitingCommit !== 1 && Date.now() < stagingDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(stickerManager.publicState().awaitingCommit, 1);
   assert.equal(stickerManager.publicState().total, 0);
