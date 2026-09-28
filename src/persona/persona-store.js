@@ -8,6 +8,9 @@ const MAX_FEEDBACK = 60;
 const MAX_GLOBAL_RULES = 50;
 const MAX_STYLE_MESSAGE_IDS = 512;
 const MIN_STYLE_SAMPLES = 8;
+export const MAX_PUBLISHED_STYLE_RULES = 5;
+export const MAX_PUBLISHED_STYLE_RULE_CHARS = 55;
+export const MAX_PUBLISHED_STYLE_TOTAL_CHARS = 220;
 
 export class PersonaStore {
   constructor({ corePath, examplesPath, statePath, relationshipsPath, rulesPath = null, ownerStylePath = null,
@@ -90,9 +93,15 @@ export class PersonaStore {
     return this.systemPrompt({ styleSections: ownerStyleRuleSection(this.publishedStyleRules) });
   }
 
+  getPublishedStyleRules() { return [...this.publishedStyleRules]; }
+
   async publishStyleRules(rules, { summarizedAt = this.clock().toISOString() } = {}) {
     const normalized = normalizeStyleRules(rules);
-    if (!normalized.length) throw new Error("发言风格总结没有可用规则");
+    if (!normalized.length || normalized.length > MAX_PUBLISHED_STYLE_RULES
+      || normalized.some((rule) => [...rule].length > MAX_PUBLISHED_STYLE_RULE_CHARS)
+      || [...normalized.join("")].length > MAX_PUBLISHED_STYLE_TOTAL_CHARS) {
+      throw new Error("发言风格总结超出长度上限");
+    }
     this.publishedStyleRules = normalized;
     this.ownerStyle.publishedStyleRules = normalized;
     this.ownerStyle.styleSummarizedAt = summarizedAt;

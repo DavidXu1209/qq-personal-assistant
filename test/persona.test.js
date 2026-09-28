@@ -138,6 +138,11 @@ test("nightly published style survives restart and daytime samples do not change
   assert.equal(restored.systemPromptForClient(), first);
   await restored.publishStyleRules(["新一版：长内容倾向分行"]);
   assert.notEqual(restored.systemPromptForClient(), first);
+  const revised = restored.systemPromptForClient();
+  assert.doesNotMatch(revised, /短句优先，偶尔只回一两个字/);
+  assert.equal(restored.getPublishedStyleRules().length, 1);
+  await assert.rejects(restored.publishStyleRules(Array(6).fill("规则")), /长度上限/);
+  assert.equal(restored.systemPromptForClient(), revised);
 });
 
 test("only OWNER explicit teaching persists as a global rule", async (t) => {
