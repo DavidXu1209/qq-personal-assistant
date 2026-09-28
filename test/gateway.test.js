@@ -1445,7 +1445,8 @@ test("group poke delivery retries only the unsent poke without rerunning the Age
   assert.equal(state.pendingMessages.length, 1);
   assert.equal(state.failedDelivery.pokes[0].delivered, false);
   assert.equal(codex.turnRuns, 1);
-  assert.match(codex.lastRun.prompt, /\[\[qq_poke:sender\]\]/);
+  assert.match(codex.lastRun.prompt, /戳了戳老代/);
+  assert.doesNotMatch(codex.lastRun.prompt, /【触发方式】|本轮由群成员戳一戳唤醒/);
   assert.doesNotMatch(codex.lastRun.prompt, /请调用.*Skill/);
 
   await fixture.store.requestTrigger("123", "retry", pending);

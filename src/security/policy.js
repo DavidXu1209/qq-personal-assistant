@@ -161,8 +161,6 @@ export function buildTurnPrompt(messages, {
   }
   lines.push(
     `【本轮权限】${currentPermissionNotice(activeSecurity)}`,
-    `【触发方式】${triggerLabel(trigger)}`,
-    ...pokePromptLines(trigger),
     "",
     "【本轮新增消息】"
   );
@@ -211,8 +209,7 @@ export function buildMcpTurnPrompt({ includeBaseInstructions = false, trigger = 
     : currentPermissionNotice(security || sandboxForTrigger(trigger));
   const lines = [
     ...(includeBaseInstructions ? ["本持久会话固定说明（首次建立或上下文压缩后刷新）：", baseThreadInstructions(), ""] : []),
-    `【本轮权限】${permission}`,
-    `【触发方式】${triggerLabel(trigger)}`
+    `【本轮权限】${permission}`
   ];
   if (sharedSystemInstructions) return lines.join("\n");
   return [
@@ -238,12 +235,6 @@ export function appendStickerCatalog(lines, catalog = []) {
     "【当前可用 QQ 原生表情包】只可从本轮真实清单选择；不要猜 ID。",
     items.join("；")
   );
-}
-
-function pokePromptLines(trigger) {
-  return trigger?.reason === "poke"
-    ? ["本轮由群成员戳一戳唤醒；可自然回复、回戳 [[qq_poke:sender]]，或只输出 [[qq_silent]] 保持安静。"]
-    : [];
 }
 
 export function sanitizeGroupReply(value) {
@@ -297,18 +288,4 @@ function currentPermissionNotice(security) {
     return `${security.mode}；仅可在本群共享工作区 ${security.cwd} 内读写、运行及发送文件，其他位置和高风险操作需要 OWNER 本轮授权。`;
   }
   return `${security.mode}；仅允许搜索、分析和非敏感只读操作，不得修改文件、系统、账号或外部状态，也不能发送本机文件或图片。`;
-}
-
-function triggerLabel(trigger) {
-  const labels = {
-    mention: "被 @ 或被点名",
-    name: "消息提到老代",
-    poke: "群成员戳一戳",
-    message_count: "待处理消息达到阈值",
-    scheduled: "定时检查",
-    followup: "两分钟接话窗口的新消息；自行判断是否继续，可直接结束而不发送",
-    subscription_auto: "自动处理通知订阅",
-    retry: "失败重试"
-  };
-  return labels[trigger?.reason] || trigger?.reason || "新消息";
 }

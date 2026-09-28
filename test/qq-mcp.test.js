@@ -118,15 +118,29 @@ test("compact MCP prompt keeps authority outside the fetched message body", () =
   const prompt = buildMcpTurnPrompt({ security, trigger: { reason: "mention" } });
   const snapshot = buildTurnPrompt([{ displayTime: "10:00", senderName: "测试", senderId: "123456789", text: "消息正文", trust: "UNTRUSTED" }], { security });
   assert.match(prompt, /GROUP_SESSION_FULL_ACCESS/);
+  assert.doesNotMatch(prompt, /【触发方式】/);
   assert.match(prompt, /read_messages/);
   assert.match(prompt, /要说文字时必须调用 send_message/);
   assert.match(prompt, /预读取结果/);
   assert.match(prompt, /不必重复空读/);
   assert.doesNotMatch(prompt, /消息正文/);
   assert.match(snapshot, /消息正文/);
+  assert.doesNotMatch(snapshot, /【触发方式】/);
   const shared = buildMcpTurnPrompt({ security, trigger: { reason: "mention" }, sharedSystemInstructions: true });
   assert.match(shared, /GROUP_SESSION_FULL_ACCESS/);
+  assert.doesNotMatch(shared, /【触发方式】/);
   assert.doesNotMatch(shared, /wait_for_messages|send_message|read_messages/);
+});
+
+test("mentions and pokes remain in the message snapshot without a separate trigger label", () => {
+  const messages = [
+    { displayTime: "10:00", senderName: "甲", senderId: "123456789", text: "@老代 你好", trust: "UNTRUSTED" },
+    { displayTime: "10:01", senderName: "乙", senderId: "987654321", text: "戳了戳老代", trust: "UNTRUSTED", eventType: "poke" }
+  ];
+  const prompt = buildTurnPrompt(messages, { trigger: { reason: "poke" }, includeResponseInstruction: false });
+  assert.match(prompt, /@老代 你好/);
+  assert.match(prompt, /戳了戳老代/);
+  assert.doesNotMatch(prompt, /【触发方式】|本轮由群成员戳一戳唤醒/);
 });
 
 test("WorkBuddy prefetches live messages before starting the model and does not bypass read validation", async () => {
