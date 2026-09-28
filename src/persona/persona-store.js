@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { gatewaySystemInstructions } from "../security/policy.js";
 
 const STATE_VERSION = 1;
 const MAX_GLOBAL_RULES = 50;
@@ -40,7 +41,7 @@ export class PersonaStore {
     ]);
   }
 
-  systemPrompt({ includeLearnedStyle = true, includeLearnedRules = true } = {}) {
+  systemPrompt({ includeLearnedStyle = true, includeLearnedRules = true, includeGatewayTools = false } = {}) {
     const core = this.core;
     return [
       "<laodai_persona>",
@@ -58,18 +59,19 @@ export class PersonaStore {
       ...section("反 AI 味黑名单", core.antiAi),
       `兴趣倾向：${core.interests.join("、")}`,
       "安全、权限、事实核验和当前任务要求始终优先于语言风格。",
+      "</laodai_persona>",
+      ...(includeGatewayTools ? [gatewaySystemInstructions()] : []),
       ...(includeLearnedStyle ? ownerStyleRuleSection(this.publishedStyleRules) : []),
       ...(includeLearnedRules ? section("OWNER 教过的长期规则", this.rules.rules) : []),
-      "</laodai_persona>"
     ].filter(Boolean).join("\n");
   }
 
   stableSystemPrompt() {
-    return this.systemPrompt({ includeLearnedStyle: false, includeLearnedRules: false });
+    return this.systemPrompt({ includeLearnedStyle: false, includeLearnedRules: false, includeGatewayTools: true });
   }
 
   systemPromptForClient() {
-    return this.systemPrompt();
+    return this.systemPrompt({ includeGatewayTools: true });
   }
 
   getPublishedStyleRules() {

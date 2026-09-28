@@ -971,6 +971,13 @@ test("AUTO prompt repeats the read-only and injection boundary on every turn", (
   assert.match(prompt, /即使有截止时间也固定进入“待办”列表/);
   assert.match(prompt, /缺失的信息保持 null，禁止猜测/);
   assert.doesNotMatch(prompt, /Calendar|Reminders|返回严格 JSON/);
+  const sharedPrompt = buildAutoSubscriptionPrompt([{ sourceGroupId: "54321", sourceGroupName: "学校群", messages: [sourceMessage("1", "明天上课", "admin")] }], {
+    targetType: "group", targetId: "12345", allowAutomations: false,
+    sourceViaMcp: true, sharedSystemInstructions: true
+  });
+  assert.match(sharedPrompt, /read_source_messages/);
+  assert.match(sharedPrompt, /actions 必须为空数组/);
+  assert.doesNotMatch(sharedPrompt, /需要占用时间参加|noticeSummaries 为每个来源群/);
   const schema = autoSubscriptionOutputSchema();
   assert.deepEqual(schema.required, ["notify", "urgency", "reply", "noticeSummaries", "ambiguity", "actions"]);
   assert.deepEqual(schema.properties.actions.items.properties.type.enum, ["calendar", "reminder"]);

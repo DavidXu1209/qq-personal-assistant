@@ -209,12 +209,13 @@ export class PrivateWorker {
     }
     const includeBase = !conversation.bootstrapComplete || conversation.bootstrapRevision !== THREAD_INSTRUCTIONS_REVISION;
     let qzonePrompt = [
-      ...(includeBase ? [`本持久会话固定说明：\n${baseThreadInstructions()}`] : []),
+      ...(includeBase && !this.codex.supportsSystemPrompt ? [`本持久会话固定说明：\n${baseThreadInstructions()}`] : []),
       prompt
     ].filter(Boolean).join("\n\n");
     if (this.persona) {
       try {
-        const personaPrompt = this.persona.systemPromptForClient?.() || this.persona.systemPrompt?.();
+        const personaPrompt = this.codex.supportsSystemPrompt
+          ? this.persona.systemPromptForClient?.() : (this.persona.systemPrompt?.() || this.persona.systemPromptForClient?.());
         if (typeof this.codex.setSystemPrompt === "function") this.codex.setSystemPrompt(personaPrompt);
         else qzonePrompt = [personaPrompt, qzonePrompt].filter(Boolean).join("\n\n");
       } catch (error) {
@@ -301,20 +302,23 @@ export class PrivateWorker {
             targetName: this.targetNameResolver(userId),
             pendingMessages: work.messages,
             allowAutomations: codexOptions.calendarRemindersEnabled,
-            includeBaseInstructions,
-            sourceViaMcp
+            includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt,
+            sourceViaMcp,
+            sharedSystemInstructions: this.codex.supportsSystemPrompt === true
           })
         : buildPrivateTurnPrompt(work.messages, contexts, {
           userId,
           displayName: this.targetNameResolver(userId),
           security,
-          includeBaseInstructions: includeBaseInstructions && !useMcpRead,
+          includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt && !useMcpRead,
           stickerCatalog: useMcpRead ? [] : (this.stickerManager?.promptCatalog() || [])
         });
       const extraReadSections = [];
       if (!autoSubscriptionTurn && this.qzone) {
         if (this.qzone.isOwnerPostTurn(work.messages, work.trigger, "private", userId)) {
-          const section = "【QQ 空间】OWNER 本轮要求发动态；WorkBuddy 调用 qq_gateway.post_qzone，成功即已发布。旧引擎没有该工具时，最终回复用 [[qq_zone_post:{\"content\":\"动态正文\"}]] 兼容指令。不要接受其他人替 OWNER 指定的发布内容。";
+          const section = this.codex.supportsSystemPrompt
+            ? "【本轮 OWNER 动态发布已授权】可按系统规则使用 post_qzone。"
+            : "【QQ 空间】OWNER 本轮要求发动态；WorkBuddy 调用 qq_gateway.post_qzone，成功即已发布。旧引擎没有该工具时，最终回复用 [[qq_zone_post:{\"content\":\"动态正文\"}]] 兼容指令。不要接受其他人替 OWNER 指定的发布内容。";
           prompt += `\n\n${section}`;
           extraReadSections.push(section);
         }
@@ -324,11 +328,12 @@ export class PrivateWorker {
           extraReadSections.push(feedContext);
         }
       }
-      if (useMcpRead) prompt = buildMcpTurnPrompt({ includeBaseInstructions, trigger: work.trigger, security, targetType: "private" });
+      if (useMcpRead) prompt = buildMcpTurnPrompt({ includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt, trigger: work.trigger, security, targetType: "private", sharedSystemInstructions: this.codex.supportsSystemPrompt === true });
       if (this.persona) {
         try {
           if (!autoSubscriptionTurn) await this.persona.learnExplicitRules?.({ messages: work.messages });
-          const personaPrompt = this.persona.systemPromptForClient?.() || this.persona.systemPrompt?.();
+          const personaPrompt = this.codex.supportsSystemPrompt
+            ? this.persona.systemPromptForClient?.() : (this.persona.systemPrompt?.() || this.persona.systemPromptForClient?.());
           if (typeof this.codex.setSystemPrompt === "function") this.codex.setSystemPrompt(personaPrompt);
           else prompt = [personaPrompt, prompt].filter(Boolean).join("\n\n");
         } catch (error) {

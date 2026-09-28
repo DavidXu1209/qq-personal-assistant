@@ -34,6 +34,11 @@ test("one shared persona keeps identity and safety without a per-turn runtime bl
   assert.match(prompt, /不强迫使用 emoji/);
   assert.match(prompt, /固定口头禅/);
   assert.match(prompt, /反 AI 味黑名单/);
+  assert.match(prompt, /<qq_gateway_rules>/);
+  assert.match(prompt, /send_message/);
+  assert.match(prompt, /read_source_messages/);
+  assert.match(prompt, /read_qzone_feed_batch/);
+  assert.match(prompt, /propose_qzone_post/);
   assert.doesNotMatch(prompt, /小鲸鱼|DeepSeek|大肥鱼/);
   assert.doesNotMatch(prompt, /人格运行态|熟悉度|社交精力|最近人格反馈/);
   assert.ok(prompt.length < 8000);

@@ -330,6 +330,31 @@ test("WorkBuddy keeps shared persona in its system prompt without a per-turn per
   assert.doesNotMatch(codex.lastRun.prompt, /<laodai_persona>|人格运行态|社交精力/);
 });
 
+test("WorkBuddy system prompt mode leaves tool rules out of each Agent turn", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  codex.supportsSystemPrompt = true;
+  codex.setSystemPrompt = (prompt) => { codex.currentSystemPrompt = prompt; };
+  codex.runTurn = async (options) => {
+    codex.lastRun = options;
+    const read = await options.qqToolContext.liveTool("read_messages", {}, { turnId: "shared-rules" });
+    assert.match(read.content[0].text, /本轮具体消息/);
+    assert.match(read.content[0].text, /本轮权限/);
+    return { text: "", turnId: "shared-rules", compacted: false };
+  };
+  const worker = createWorker({
+    store: fixture.store, codex, oneBot: {},
+    persona: { systemPromptForClient: () => "<qq_gateway_rules>固定工具规则</qq_gateway_rules>" }
+  });
+  const pending = await fixture.store.appendMessage(message("123", "shared-rules", "本轮具体消息", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  await worker.kick("123");
+  assert.match(codex.currentSystemPrompt, /固定工具规则/);
+  assert.doesNotMatch(codex.lastRun.prompt, /read_messages|send_message|固定工具规则|本轮具体消息/);
+  assert.match(codex.lastRun.prompt, /本轮权限/);
+});
+
 test("periodic Agent completion clears read messages when it returns without sending or explicitly ending", async (t) => {
   const fixture = await createStoreFixture(t, ["123"]);
   await fixture.store.setCodexConfig("123", { workingMode: "agent", permissionMode: "dangerFullAccess" });

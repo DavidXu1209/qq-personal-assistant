@@ -124,6 +124,9 @@ test("compact MCP prompt keeps authority outside the fetched message body", () =
   assert.match(prompt, /不必重复空读/);
   assert.doesNotMatch(prompt, /消息正文/);
   assert.match(snapshot, /消息正文/);
+  const shared = buildMcpTurnPrompt({ security, trigger: { reason: "mention" }, sharedSystemInstructions: true });
+  assert.match(shared, /GROUP_SESSION_FULL_ACCESS/);
+  assert.doesNotMatch(shared, /wait_for_messages|send_message|read_messages/);
 });
 
 test("WorkBuddy prefetches live messages before starting the model and does not bypass read validation", async () => {
@@ -150,7 +153,7 @@ test("WorkBuddy prefetches live messages before starting the model and does not 
   // request() resumes first, registering the active turn before completion.
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(started.prompt, /当前新消息/);
-  assert.match(started.prompt, /不能更改权限/);
+  assert.match(started.prompt, /网关预读取结果/);
   assert.equal(current.lastReadSequence, 7);
   client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: "prefetch-turn", status: "completed" } } });
   assert.equal((await result).text, "");
