@@ -893,8 +893,7 @@ test("WorkBuddy Agent private turn reads its current message through the scoped 
     followupDurationMs: 0,
     persona: {
       systemPrompt: () => "<laodai_persona>每轮完整人格</laodai_persona>",
-      prepareTurn: async () => "【老代人格运行态】",
-      recordOutcome: async () => {}
+      prepareTurn: async () => { throw new Error("已停用的运行态不能再注入"); }
     },
     oneBot: { async sendPrivateMessage(_id, text) { sent.push(text); return { ok: true, status: 200 }; } },
     mediaManager: { removeMessages: async () => {} },
@@ -908,6 +907,7 @@ test("WorkBuddy Agent private turn reads its current message through the scoped 
   await worker.kick(OWNER_QQ_ID);
   assert.match(codex.lastPrompt, /read_messages/);
   assert.match(codex.lastPrompt, /<laodai_persona>每轮完整人格<\/laodai_persona>/);
+  assert.doesNotMatch(codex.lastPrompt, /人格运行态|本轮社交精力/);
   assert.doesNotMatch(codex.lastPrompt, /私聊本轮独有内容/);
   assert.equal(codex.lastToolContext.readCalled, true);
   assert.deepEqual(sent, ["私聊收到。"]);

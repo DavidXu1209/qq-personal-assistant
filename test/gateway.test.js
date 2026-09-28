@@ -265,8 +265,7 @@ test("WorkBuddy Agent group turn passes only a compact prompt and exposes its fr
     store: fixture.store, codex,
     persona: {
       systemPrompt: () => "<laodai_persona>每轮完整人格</laodai_persona>",
-      prepareTurn: async () => "【老代人格运行态】",
-      recordOutcome: async () => {}
+      recordOutcome: async () => { throw new Error("已停用的运行态不能再更新"); }
     },
     oneBot: { async sendGroupMessage() { return { ok: true, status: 200 }; } }
   });
@@ -275,6 +274,7 @@ test("WorkBuddy Agent group turn passes only a compact prompt and exposes its fr
   await worker.kick("123");
   assert.match(codex.lastRun.prompt, /read_messages/);
   assert.match(codex.lastRun.prompt, /<laodai_persona>每轮完整人格<\/laodai_persona>/);
+  assert.doesNotMatch(codex.lastRun.prompt, /人格运行态|本轮社交精力/);
   assert.doesNotMatch(codex.lastRun.prompt, /本轮独有的长消息内容/);
   assert.equal(codex.lastRun.qqToolContext.readCalled, true);
   assert.equal(codex.lastRun.qqToolContext.requireRead, true);
@@ -302,6 +302,32 @@ test("WorkBuddy Agent group final text never sends without the MCP send_message 
   assert.deepEqual(sent, []);
   assert.deepEqual(fixture.store.snapshot("123").pendingMessages.map((item) => item.messageId), ["group-final-only"]);
   assert.equal(fixture.store.snapshot("123").lastCompletedReply, null);
+});
+
+test("WorkBuddy keeps shared persona in its system prompt without a per-turn persona block", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  codex.setSystemPrompt = (prompt) => { codex.currentSystemPrompt = prompt; };
+  codex.runTurn = async (options) => {
+    codex.lastRun = options;
+    const read = await options.qqToolContext.liveTool("read_messages", {}, { turnId: "fixed-persona" });
+    assert.equal(read.isError, false);
+    return { text: "", turnId: "fixed-persona", compacted: false };
+  };
+  const worker = createWorker({
+    store: fixture.store, codex, oneBot: {},
+    persona: {
+      systemPromptForClient: () => "<laodai_persona>所有会话共用</laodai_persona>",
+      prepareTurn: async () => { throw new Error("不能再创建每轮人格状态"); },
+      recordOutcome: async () => { throw new Error("不能再更新每轮人格状态"); }
+    }
+  });
+  const pending = await fixture.store.appendMessage(message("123", "fixed-persona", "固定人格测试", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  await worker.kick("123");
+  assert.equal(codex.currentSystemPrompt, "<laodai_persona>所有会话共用</laodai_persona>");
+  assert.doesNotMatch(codex.lastRun.prompt, /<laodai_persona>|人格运行态|社交精力/);
 });
 
 test("periodic Agent completion clears read messages when it returns without sending or explicitly ending", async (t) => {
@@ -335,8 +361,7 @@ test("scheduled MCP Qzone turn keeps its configured Agent permission without sen
     store: fixture.store, codex, oneBot: {},
     persona: {
       systemPrompt: () => "<laodai_persona>动态也使用完整人格</laodai_persona>",
-      prepareTurn: async () => "【老代人格运行态】",
-      recordOutcome: async () => {}
+      prepareTurn: async () => { throw new Error("已停用的运行态不能再注入"); }
     }
   });
   const qqToolContext = { liveMode: true, liveTool: async () => ({ isError: false, content: [] }) };
@@ -345,7 +370,7 @@ test("scheduled MCP Qzone turn keeps its configured Agent permission without sen
   assert.deepEqual(codex.lastRun.turnSandbox, { type: "dangerFullAccess" });
   assert.equal(codex.lastRun.qqToolContext, qqToolContext);
   assert.match(codex.lastRun.prompt, /<laodai_persona>动态也使用完整人格<\/laodai_persona>/);
-  assert.match(codex.lastRun.prompt, /【老代人格运行态】/);
+  assert.doesNotMatch(codex.lastRun.prompt, /【老代人格运行态】/);
   assert.equal(fixture.store.snapshot("123").pendingMessages.length, 0);
 });
 

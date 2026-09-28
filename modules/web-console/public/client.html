@@ -118,59 +118,29 @@
           </details>
 
           <details id="personaDetails" class="session-details agent-settings-details persona-details">
-            <summary>老代人格 <span id="personaSummary">—</span></summary>
+            <summary>老代人格 <span id="personaSummary">所有会话共用</span></summary>
             <form id="personaForm" class="agent-settings-form persona-form">
-              <div class="persona-facts" aria-label="当前会话人格状态">
-                <span>熟悉度<strong id="personaFamiliarity">—</strong></span>
-                <span>累计互动<strong id="personaInteractionCount">0</strong></span>
-                <span>认识成员<strong id="personaMemberCount">0</strong></span>
-              </div>
-              <p class="field-note">人格核心来自问卷；这里只调整当前群或私聊的关系备注与临时状态，不会改其他会话。</p>
-              <label for="personaEnergy">精力 <output id="personaEnergyValue">—</output>
-                <input id="personaEnergy" type="range" min="0.1" max="0.95" step="0.01" />
-              </label>
-              <label for="personaSociability">社交意愿 <output id="personaSociabilityValue">—</output>
-                <input id="personaSociability" type="range" min="0.1" max="0.95" step="0.01" />
-              </label>
-              <label for="personaPlayfulness">玩笑倾向 <output id="personaPlayfulnessValue">—</output>
-                <input id="personaPlayfulness" type="range" min="0.1" max="0.95" step="0.01" />
-              </label>
-              <label for="personaPatience">耐心 <output id="personaPatienceValue">—</output>
-                <input id="personaPatience" type="range" min="0.1" max="0.95" step="0.01" />
-              </label>
-              <label for="personaNotes">当前会话补充
-                <textarea id="personaNotes" rows="3" maxlength="1200" placeholder="每行一条，例如：这个群熟人多，可以更随意"></textarea>
-              </label>
+              <p class="field-note">所有群聊、私聊和动态共用同一份人格；不再计算或注入每轮精力、熟悉度和关系状态。固定核心可在本机私人人格文件中编辑。</p>
               <label for="personaGlobalRules">所有会话长期规则
                 <textarea id="personaGlobalRules" rows="3" maxlength="6000" placeholder="每行一条；也可由 OWNER 对老代说“记住：……”"></textarea>
               </label>
-              <p class="field-note">这里的规则只接受 OWNER 修改，并注入所有群聊、私聊和 QQ 空间任务。</p>
+              <p class="field-note">保存后下一轮对所有会话生效。每天 04:00 的发言风格总结仍会更新共用人格。</p>
               <section class="persona-learning" aria-label="自动学习 OWNER 的表达方式">
                 <div class="persona-learning-head">
-                  <span>自动学习你的表达</span>
-                  <strong id="personaOwnerStyleSummary">尚未开始</strong>
+                  <span>每天 04:00 的表达总结</span>
+                  <strong id="personaOwnerStyleSummary">尚未总结</strong>
                 </div>
                 <ul id="personaOwnerStyleRules" class="persona-owner-style-rules">
-                  <li>继续正常聊天，样本足够后会自动生成表达规则。</li>
+                  <li>尚无已发布的表达规则。</li>
                 </ul>
-                <p class="field-note">只统计 OWNER 消息的长度、断句、标点和已有口头禅；不保存正文，也不学习聊天事实、权限或其他成员的风格。</p>
               </section>
               <details class="persona-preview-details">
-                <summary>查看实际人格注入</summary>
+                <summary>查看共用人格</summary>
                 <pre id="personaPromptPreview" class="persona-prompt-preview">—</pre>
-                <p class="field-note">这是当前会话下一轮会使用的人格部分；本轮消息、权限和工具说明会在触发时另外插入。</p>
+                <p class="field-note">当前固定核心、长期规则和已发布的每日总结。本轮消息与权限另行提供。</p>
               </details>
               <p id="personaStatus" class="form-status" role="status" aria-live="polite"></p>
-              <button id="savePersonaButton" class="button primary full-button" type="submit" disabled>保存人格状态</button>
-              <div class="persona-feedback">
-                <label for="personaFeedbackNote">评价上一条回复（可选）
-                  <input id="personaFeedbackNote" maxlength="240" placeholder="例如：太像客服了 / 这次节奏很好" />
-                </label>
-                <div class="compact-actions">
-                  <button id="personaPositiveButton" class="button ghost" type="button">符合老代人格</button>
-                  <button id="personaNegativeButton" class="button ghost" type="button">不符合老代人格</button>
-                </div>
-              </div>
+              <button id="savePersonaButton" class="button primary full-button" type="submit" disabled>保存长期规则</button>
             </form>
           </details>
 

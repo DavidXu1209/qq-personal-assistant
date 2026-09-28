@@ -9,10 +9,7 @@ const els = Object.fromEntries([
   "agentSettingsDetails", "agentSettingsSummary", "agentSettingsForm", "agentModel", "agentReasoningEffort",
   "agentContextTokenLimit", "agentWorkingMode", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
   "agentSettingsHint", "agentSettingsStatus", "saveAgentSettingsButton",
-  "personaDetails", "personaSummary", "personaForm", "personaFamiliarity", "personaInteractionCount", "personaMemberCount",
-  "personaEnergy", "personaEnergyValue", "personaSociability", "personaSociabilityValue", "personaPlayfulness", "personaPlayfulnessValue",
-  "personaPatience", "personaPatienceValue", "personaNotes", "personaGlobalRules", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview", "personaStatus", "savePersonaButton", "personaFeedbackNote",
-  "personaPositiveButton", "personaNegativeButton",
+  "personaDetails", "personaSummary", "personaForm", "personaGlobalRules", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview", "personaStatus", "savePersonaButton",
   "stickerLabelDetails", "stickerLabelSummary", "stickerLabelForm", "stickerLabelModel", "stickerLabelStatus", "saveStickerLabelButton",
   "addSubscriptionButton", "subscriptionForm", "subscriptionId", "subscriptionSource", "subscriptionIntake",
   "subscriptionDelayLabel", "subscriptionDelay", "subscriptionEnabled", "cancelSubscriptionButton",
@@ -33,7 +30,6 @@ let settingsSignature = "";
 let settingsDirty = false;
 let personaSignature = "";
 let personaDirty = false;
-let personaFeedbackSaving = false;
 let stickerLabelSignature = "";
 let stickerLabelDirty = false;
 let stickerGallerySignature = "";
@@ -406,55 +402,28 @@ function renderAgentSettings(item) {
 
 function renderPersona(item) {
   if (!item || item.kind === "source") return;
-  const persona = item.data.persona || {};
-  const mood = persona.mood || { energy: 0.62, sociability: 0.5, playfulness: 0.58, patience: 0.72 };
-  const feedback = persona.feedback || { positive: 0, negative: 0 };
-  const ownerStyle = persona.ownerStyle || {};
-  els.personaSummary.textContent = `${persona.familiarity || "刚认识"} · ${Number(persona.interactionCount || 0)} 次互动`;
-  els.personaFamiliarity.textContent = persona.familiarity || "刚认识";
-  els.personaInteractionCount.textContent = String(Number(persona.interactionCount || 0));
-  els.personaMemberCount.textContent = String(Number(persona.knownMemberCount || 0));
-  const nextSignature = JSON.stringify([item.key, persona]);
+  const persona = state?.persona || {};
+  const publishedStyle = persona.publishedStyle || {};
+  els.personaSummary.textContent = "所有会话共用";
+  const nextSignature = JSON.stringify(persona.globalRules || []);
   if (!personaDirty && personaSignature !== nextSignature) {
-    els.personaEnergy.value = String(mood.energy);
-    els.personaSociability.value = String(mood.sociability);
-    els.personaPlayfulness.value = String(mood.playfulness);
-    els.personaPatience.value = String(mood.patience);
-    els.personaNotes.value = (persona.notes || []).join("\n");
     els.personaGlobalRules.value = (persona.globalRules || []).join("\n");
     personaSignature = nextSignature;
   }
-  els.personaOwnerStyleSummary.textContent = ownerStyle.ready
-    ? `${Number(ownerStyle.sampleCount || 0)} 条有效样本`
-    : `${Number(ownerStyle.sampleCount || 0)}/${Number(ownerStyle.minimumSamples || 8)} 条后开始归纳`;
-  const learnedRules = ownerStyle.learnedRules || [];
+  els.personaOwnerStyleSummary.textContent = publishedStyle.summarizedAt
+    ? `最近更新 ${formatTime(publishedStyle.summarizedAt)}` : "尚未总结";
+  const learnedRules = publishedStyle.rules || [];
   els.personaOwnerStyleRules.innerHTML = learnedRules.length
     ? learnedRules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join("")
-    : "<li>继续正常聊天，样本足够后会自动生成表达规则。</li>";
+    : "<li>尚无已发布的表达规则。</li>";
   els.personaPromptPreview.textContent = persona.promptPreview || "—";
-  updatePersonaOutputs();
-  const hasReply = Boolean(item.data.lastCompletedReply?.text);
   els.savePersonaButton.disabled = !personaDirty;
-  els.personaPositiveButton.disabled = !hasReply || personaFeedbackSaving;
-  els.personaNegativeButton.disabled = !hasReply || personaFeedbackSaving;
-  els.personaPositiveButton.textContent = `符合老代人格 · ${Number(feedback.positive || 0)}`;
-  els.personaNegativeButton.textContent = `不符合老代人格 · ${Number(feedback.negative || 0)}`;
-}
-
-function updatePersonaOutputs() {
-  for (const [input, output] of [
-    [els.personaEnergy, els.personaEnergyValue],
-    [els.personaSociability, els.personaSociabilityValue],
-    [els.personaPlayfulness, els.personaPlayfulnessValue],
-    [els.personaPatience, els.personaPatienceValue]
-  ]) output.textContent = `${Math.round(Number(input.value || 0) * 100)}%`;
 }
 
 function markPersonaDirty() {
   personaDirty = true;
   els.personaStatus.textContent = "有未保存的调整";
   els.personaStatus.className = "form-status";
-  updatePersonaOutputs();
   renderPersona(currentTarget());
 }
 
@@ -1072,9 +1041,7 @@ els.agentSettingsForm.addEventListener("submit", async (event) => {
     els.saveAgentSettingsButton.disabled = !settingsDirty;
   }
 });
-for (const input of [els.personaEnergy, els.personaSociability, els.personaPlayfulness, els.personaPatience, els.personaNotes, els.personaGlobalRules]) {
-  input.addEventListener("input", markPersonaDirty);
-}
+els.personaGlobalRules.addEventListener("input", markPersonaDirty);
 els.personaForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const item = currentTarget();
@@ -1082,23 +1049,14 @@ els.personaForm.addEventListener("submit", async (event) => {
   els.savePersonaButton.disabled = true;
   els.personaStatus.textContent = "正在保存…";
   try {
-    const updated = await api(`/api/persona/targets/${item.kind}/${encodeURIComponent(item.data.targetId)}`, {
+    const updated = await api("/api/persona/rules", {
       method: "POST",
-      body: JSON.stringify({
-        notes: els.personaNotes.value.split("\n").map((value) => value.trim()).filter(Boolean),
-        globalRules: els.personaGlobalRules.value.split("\n").map((value) => value.trim()).filter(Boolean),
-        mood: {
-          energy: Number(els.personaEnergy.value),
-          sociability: Number(els.personaSociability.value),
-          playfulness: Number(els.personaPlayfulness.value),
-          patience: Number(els.personaPatience.value)
-        }
-      })
+      body: JSON.stringify({ rules: els.personaGlobalRules.value.split("\n").map((value) => value.trim()).filter(Boolean) })
     });
-    item.data.persona = updated;
+    state.persona.globalRules = updated.rules;
     personaDirty = false;
     personaSignature = "";
-    els.personaStatus.textContent = "已保存，从下一轮起生效";
+    els.personaStatus.textContent = "已保存，所有会话从下一轮起生效";
     els.personaStatus.className = "form-status";
     renderPersona(item);
     scheduleRefresh();
@@ -1106,35 +1064,9 @@ els.personaForm.addEventListener("submit", async (event) => {
     personaDirty = true;
     els.personaStatus.textContent = error.message;
     els.personaStatus.className = "form-status error";
+    els.savePersonaButton.disabled = false;
   }
 });
-for (const [button, rating] of [[els.personaPositiveButton, 1], [els.personaNegativeButton, -1]]) {
-  button.addEventListener("click", async () => {
-    const item = currentTarget();
-    if (!item || !item.data.lastCompletedReply?.text || personaFeedbackSaving) return;
-    personaFeedbackSaving = true;
-    els.personaStatus.textContent = "正在记录评价…";
-    renderPersona(item);
-    try {
-      const updated = await api("/api/persona/feedback", {
-        method: "POST",
-        body: JSON.stringify({ targetType: item.kind, targetId: item.data.targetId, rating, note: els.personaFeedbackNote.value.trim() })
-      });
-      item.data.persona = updated;
-      els.personaFeedbackNote.value = "";
-      personaSignature = "";
-      els.personaStatus.textContent = "已记录；备注会在相关回复中作为参考";
-      els.personaStatus.className = "form-status";
-      scheduleRefresh();
-    } catch (error) {
-      els.personaStatus.textContent = error.message;
-      els.personaStatus.className = "form-status error";
-    } finally {
-      personaFeedbackSaving = false;
-      renderPersona(item);
-    }
-  });
-}
 els.stickerLabelModel.addEventListener("change", () => {
   stickerLabelDirty = true;
   els.stickerLabelStatus.textContent = "有未保存的修改";

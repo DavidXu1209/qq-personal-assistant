@@ -47,8 +47,6 @@ const stickerStorePath = join(dataDir, "stickers.json");
 const stickerLabelSettingsPath = join(dataDir, "sticker-label-settings.json");
 const stickerCurationPath = join(dataDir, "sticker-curation.json");
 const qzoneStorePath = join(dataDir, "qzone.json");
-const personaStatePath = join(dataDir, "persona-state.json");
-const relationshipMemoryPath = join(dataDir, "relationship-memory.json");
 const personaRulesPath = join(dataDir, "persona-rules.json");
 const personaOwnerStylePath = join(dataDir, "persona-owner-style.json");
 const personaStyleSamplesPath = join(dataDir, "persona-style-samples.json");
@@ -174,11 +172,8 @@ await privateStore.init({ allowedGroups: configuredPrivateIds });
 const personaStore = new PersonaStore({
   corePath: personaCorePath,
   examplesPath: personaExamplesPath,
-  statePath: personaStatePath,
-  relationshipsPath: relationshipMemoryPath,
   rulesPath: personaRulesPath,
-  ownerStylePath: personaOwnerStylePath,
-  useClientSystemPrompt: engineKind === "workbuddy"
+  ownerStylePath: personaOwnerStylePath
 });
 await personaStore.init();
 if (engineKind === "workbuddy") {
@@ -392,44 +387,6 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, publicState());
-    return;
-  }
-  const personaTarget = url.pathname.match(/^\/api\/persona\/targets\/(group|private)\/([^/]+)$/);
-  if (req.method === "POST" && personaTarget) {
-    const targetType = personaTarget[1];
-    const targetId = decodeURIComponent(personaTarget[2]);
-    assertTarget(targetType, targetId);
-    const body = parseJson(rawBody);
-    if (Object.prototype.hasOwnProperty.call(body, "globalRules")) {
-      await personaStore.updateRules(body.globalRules);
-    }
-    const updated = await personaStore.updateTarget({
-      targetType,
-      targetId,
-      notes: body.notes,
-      mood: body.mood
-    });
-    recordEvent({ type: "persona-target-updated", targetType, targetId, at: new Date().toISOString() });
-    sendJson(res, 200, updated);
-    return;
-  }
-  if (req.method === "POST" && url.pathname === "/api/persona/feedback") {
-    const body = parseJson(rawBody);
-    const targetType = body.targetType === "private" ? "private" : "group";
-    const targetId = String(body.targetId || "");
-    assertTarget(targetType, targetId);
-    if (![1, -1].includes(Number(body.rating))) throw new HttpError(400, "rating must be 1 or -1");
-    const targetStore = targetType === "private" ? privateStore : store;
-    const reply = targetStore.snapshot(targetId).lastCompletedReply?.text || "";
-    const updated = await personaStore.addFeedback({
-      targetType,
-      targetId,
-      rating: Number(body.rating),
-      note: String(body.note || ""),
-      reply
-    });
-    recordEvent({ type: "persona-feedback-added", targetType, targetId, rating: Number(body.rating), at: new Date().toISOString() });
-    sendJson(res, 200, updated);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/persona/rules") {
@@ -890,7 +847,6 @@ function publicState() {
       targetType: "group",
       targetId: group.groupId,
       conversationType: "AGENT_CHAT_GROUP",
-      persona: personaStore.targetState("group", group.groupId),
       threadLock: threadReservations.stateFor("group", group.groupId, group.threadId),
       subscriptions: subscriptionStore.listSubscriptions({ targetType: "group", targetId: group.groupId })
     }];
@@ -905,7 +861,6 @@ function publicState() {
       targetType: "private",
       targetId: conversation.groupId,
       conversationType: "PRIVATE_AGENT_CHAT",
-      persona: personaStore.targetState("private", conversation.groupId),
       threadLock: threadReservations.stateFor("private", conversation.groupId, conversation.threadId),
       subscriptions: subscriptionStore.listSubscriptions({ targetType: "private", targetId: conversation.groupId })
     }];
@@ -1088,8 +1043,6 @@ async function maintenanceState() {
       subscriptions: subscriptionStorePath,
       agentDispatch: agentDispatchStorePath,
       stickers: stickerStorePath,
-      personaState: personaStatePath,
-      relationshipMemory: relationshipMemoryPath,
       personaRules: personaRulesPath,
       personaOwnerStyle: personaOwnerStylePath,
       personaStyleSamples: personaStyleSamplesPath,

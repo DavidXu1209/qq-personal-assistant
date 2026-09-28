@@ -45,7 +45,7 @@
 - 每个目标独立授权日历/提醒：写入“学习 / 社团 / 活动”日历和“待办”列表，提醒加旗标；写后回读并在 QQ 确认。
 - 原生表情先按商城 ID、SHA-256、MD5 去重，再在临时会话识图。黑名单阻止重复识别与使用。每天北京时间 05:00 检查，超过 100 个时筛选保留 80 个。
 - QQ 空间绑定会话、定时纯文字动态、整点好友动态检查；按最近阅读的动态发布时间增量检查。发布限 OWNER，自动功能默认关闭。
-- 稳定人格、情境示例、会话社交状态、OWNER 规则及表达统计分层保存。公开版为通用示例，不包含私人问卷和学习结果。
+- 所有会话共用一份固定人格与 OWNER 长期规则；每天 04:00 可更新一次表达风格摘要，不再为每轮生成精力、熟悉度等人格运行态。公开版不包含私人问卷和学习结果。
 - macOS 登录后自启动，网关与 QQ 恢复分离。发送临时副本及时清理，原件不动。
 
 ## 架构
@@ -155,7 +155,7 @@ npm run audit:public
 | src/groups、src/qq | 队列、触发、收发、MCP、表情和空间 |
 | src/storage、src/security | 持久状态、订阅引用和权限 |
 | src/workbuddy、modules/workbuddy-agent | 客户端、Python 桥、stdio MCP |
-| src/persona、persona | 人格分层与通用示例 |
+| src/persona、persona | 共用人格、每日表达摘要与通用模板 |
 | modules/web-console、modules/mac-client | 网页与 macOS 客户端 |
 | scripts、test、test-support | 自动化、恢复、演示、审计和离线测试 |
 

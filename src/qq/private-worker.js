@@ -214,24 +214,9 @@ export class PrivateWorker {
     ].filter(Boolean).join("\n\n");
     if (this.persona) {
       try {
-        const usesDynamicSystemPrompt = typeof this.codex.setSystemPrompt === "function";
-        if (typeof this.persona.compileTurn === "function") {
-          qzonePrompt = await this.persona.compileTurn({
-            targetType: "private", targetId: userId,
-            targetName: this.targetNameResolver(userId),
-            messages: [], trigger: { reason: trigger }, record: false,
-            taskPrompt: qzonePrompt,
-            scene: trigger === "qzone-feed" ? "qzone-feed" : "qzone-post",
-            includeStable: !usesDynamicSystemPrompt
-          });
-        } else {
-          const runtime = await this.persona.prepareTurn?.({
-            targetType: "private", targetId: userId, targetName: this.targetNameResolver(userId),
-            messages: [], trigger: { reason: trigger }, record: false
-          });
-          qzonePrompt = [usesDynamicSystemPrompt ? "" : this.persona.systemPrompt?.(), runtime, qzonePrompt].filter(Boolean).join("\n\n");
-        }
-        this.codex.setSystemPrompt?.(this.persona.systemPromptForClient?.() || this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
+        const personaPrompt = this.persona.systemPromptForClient?.() || this.persona.systemPrompt?.();
+        if (typeof this.codex.setSystemPrompt === "function") this.codex.setSystemPrompt(personaPrompt);
+        else qzonePrompt = [personaPrompt, qzonePrompt].filter(Boolean).join("\n\n");
       } catch (error) {
         this.onEvent({ type: "persona-error", targetType: "private", targetId: userId, error: error.message, at: new Date().toISOString() });
       }
@@ -343,26 +328,9 @@ export class PrivateWorker {
       if (this.persona) {
         try {
           if (!autoSubscriptionTurn) await this.persona.learnExplicitRules?.({ messages: work.messages });
-          const usesDynamicSystemPrompt = typeof this.codex.setSystemPrompt === "function";
-          if (typeof this.persona.compileTurn === "function") {
-            prompt = await this.persona.compileTurn({
-              targetType: "private",
-              targetId: userId,
-              targetName: this.targetNameResolver(userId),
-              messages: work.messages,
-              trigger: work.trigger,
-              taskPrompt: prompt,
-              scene: autoSubscriptionTurn ? "subscription" : "private",
-              includeStable: !usesDynamicSystemPrompt
-            });
-          } else if (!autoSubscriptionTurn) {
-            const runtime = await this.persona.prepareTurn?.({
-              targetType: "private", targetId: userId, targetName: this.targetNameResolver(userId),
-              messages: work.messages, trigger: work.trigger
-            });
-            prompt = [usesDynamicSystemPrompt ? "" : this.persona.systemPrompt?.(), runtime, prompt].filter(Boolean).join("\n\n");
-          }
-          this.codex.setSystemPrompt?.(this.persona.systemPromptForClient?.() || this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
+          const personaPrompt = this.persona.systemPromptForClient?.() || this.persona.systemPrompt?.();
+          if (typeof this.codex.setSystemPrompt === "function") this.codex.setSystemPrompt(personaPrompt);
+          else prompt = [personaPrompt, prompt].filter(Boolean).join("\n\n");
         } catch (error) {
           this.onEvent({ type: "persona-error", targetType: "private", targetId: userId, error: error.message, at: new Date().toISOString() });
         }
@@ -449,12 +417,6 @@ export class PrivateWorker {
           consumeReadWithoutReply: silentScheduledCompletion
         });
         await this.mediaManager.removeMessages([...processed, ...removedSourceMessages]);
-        if (this.persona && qqToolContext.actionCount > 0) {
-          await this.persona.recordOutcome({
-            targetType: "private", targetId: userId,
-            text: live?.lastReply || "", actionCount: qqToolContext.actionCount
-          });
-        }
         this.followup.publishWaiting(userId, { threadId, turnId: result.turnId });
         this.onEvent({ type: "private-turn-completed", userId, threadId, turnId: result.turnId, reply: live?.lastReply || "", at: new Date().toISOString() });
         return;
