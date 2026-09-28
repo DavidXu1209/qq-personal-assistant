@@ -10,6 +10,7 @@
 | 模型、模式、权限、通知订阅 | 网关面板 | 由后台保存；通常下一轮生效 |
 | 私人身份、部署路径 | `config/qq-only.env` | 重启 Hub 与相关恢复服务 |
 | 稳定人格与情境示例 | `config/private/persona/core.json`、`examples.json` | 重启 Hub，后续轮次重新注入 |
+| 自动学习 OWNER 发言风格 | 网关在 `runtime/qq-only-data/persona-style-samples.json` 暂存样本 | 每天上海时间 04:00 总结后，所有持久会话下一轮共同生效 |
 | 通用人格模板 | `persona/core.json`、`examples.json` | 仅对未配置私人覆盖目录的部署生效 |
 | QQ 工具与行为权限 | `src/qq`、`src/security` | 测试通过后重启 Hub |
 | WorkBuddy 桥与执行参数 | `src/workbuddy`、`modules/workbuddy-agent/bridge.py` | 测试通过后重启 Hub |
@@ -38,6 +39,12 @@ CODEX_REMOTE_CONTACT_PERSONA_DIR=config/private/persona
 实际 env 按 Node 的 dotenv 格式读取，不执行 shell 命令或展开变量；路径应填写实际值。外部注入的同名环境变量优先。后台恢复与 Hub 均通过 Node 读取配置，避免 launchd shell 直接读取 Documents 时被 macOS 隐私保护拦截；这不绕过系统权限，Node 运行时本身仍需获得相应目录的读取授权。
 
 PRIVATE 目录及实际 env 被 Git 忽略，公开发布审计也会拒绝收录。不要 `git add -f`。人格中的学习统计、群关系和 OWNER 长期规则仍独立保存在 `runtime/qq-only-data`，更新模板不应清空这些数据。
+
+## 每日发言风格总结
+
+网关只收集 OWNER 在已管理群聊与私聊中发出的纯文本消息；只读通知源、其他人的消息、图片和混合消息不会进入样本。原文暂存在本地私有运行目录，不进入公开仓库。上海时间每天 04:00，独立临时只读会话汇总此前收到的样本；它通过现有任务屏障等待正在进行的回复结束，期间新回复排队，但新 QQ 消息仍可记录。总结成功且临时会话清理完成后，才更新所有会话共用的系统提示词并删除已处理原文。失败时保留样本，一小时后重试；总开关关闭时仍收集消息，但不调用模型。
+
+静态人格与已发布的风格总结处于系统提示词，后者不会随白天每条消息变化。临时会话不继承老代的系统提示词，也不保留长期上下文。若没有新纯文本样本，不会为了定时任务调用模型。系统提示词实际变化时，WorkBuddy 下一次续接该持久会话可能重新建立提示词缓存并稍微变慢；未变化的静态前缀仍有机会复用，无法保证缓存命中率完全不受影响。
 
 ## 目录边界
 

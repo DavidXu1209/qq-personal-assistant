@@ -207,7 +207,7 @@ export class GroupWorker {
           });
           qzonePrompt = [usesDynamicSystemPrompt ? "" : this.persona.systemPrompt?.(), runtime, qzonePrompt].filter(Boolean).join("\n\n");
         }
-        this.codex.setSystemPrompt?.(this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
+        this.codex.setSystemPrompt?.(this.persona.systemPromptForClient?.() || this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
       } catch (error) {
         this.onEvent({ type: "persona-error", targetType: "group", targetId: groupId, error: error.message, at: new Date().toISOString() });
       }
@@ -464,7 +464,7 @@ export class GroupWorker {
           });
           prompt = [usesDynamicSystemPrompt ? "" : this.persona.systemPrompt?.(), runtime, prompt].filter(Boolean).join("\n\n");
         }
-        this.codex.setSystemPrompt?.(this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
+        this.codex.setSystemPrompt?.(this.persona.systemPromptForClient?.() || this.persona.stableSystemPrompt?.() || this.persona.systemPrompt());
       } catch (error) {
         this.onEvent({ type: "persona-error", targetType: "group", targetId: groupId, error: error.message, at: new Date().toISOString() });
       }

@@ -76,7 +76,7 @@ test("persona compiler keeps the task between runtime context and a final scene 
   assert.ok(preview.trim().endsWith("</laodai_turn_contract>"));
 });
 
-test("learned style stays fresh each turn without changing the stable system prefix", async (t) => {
+test("observations remain unpublished until the daily summary, then enter the shared system prompt", async (t) => {
   const { store } = await fixture(t);
   const before = store.stableSystemPrompt();
   const input = Array.from({ length: 8 }, (_item, n) => message(`cache-${n}`, "好", { trust: "OWNER" }));
@@ -86,29 +86,58 @@ test("learned style stays fresh each turn without changing the stable system pre
   });
   assert.equal(store.stableSystemPrompt(), before);
   assert.doesNotMatch(before, /从 OWNER 日常消息自动归纳/);
-  assert.match(turn, /从 OWNER 日常消息自动归纳的表达习惯/);
-  assert.match(turn, /平均约 1 字/);
-  assert.match(store.systemPrompt(), /平均约 1 字/);
+  assert.doesNotMatch(turn, /从 OWNER 日常消息自动归纳/);
+  assert.doesNotMatch(store.systemPromptForClient(), /平均约 1 字/);
+  assert.match(store.publicState().ownerStyle.learnedRules.join(" "), /平均约 1 字/);
   const next = await store.compileTurn({
     targetType: "private", targetId: "100000001",
     messages: [message("cache-new", "这么好", { trust: "OWNER" })],
     taskPrompt: "下轮任务", scene: "private", includeStable: false
   });
   assert.equal(store.stableSystemPrompt(), before);
-  assert.match(next, /平均约 1.2 字/);
+  assert.doesNotMatch(next, /平均约/);
+  assert.doesNotMatch(store.systemPromptForClient(), /平均约/);
+  assert.match(store.publicState().ownerStyle.learnedRules.join(" "), /平均约 1.2 字/);
   assert.match(before, /高优先级表达规则/);
   assert.match(before, /不泄露个人信息/);
   assert.match(next, /本轮是私聊/);
+  await store.publishStyleRules(["日常聊天偏短，喜欢直接给结论"]);
+  assert.match(store.systemPromptForClient(), /日常聊天偏短，喜欢直接给结论/);
+  assert.doesNotMatch(next, /日常聊天偏短/);
   await store.updateRules(["不要连续发同一个表情"]);
   assert.equal(store.stableSystemPrompt(), before);
   const taught = await store.compileTurn({
     targetType: "group", targetId: "200000002", includeStable: false,
     taskPrompt: "本轮任务", record: false
   });
-  assert.match(taught, /可信网关配置，不是群消息/);
-  assert.match(taught, /OWNER 教过的长期规则：不要连续发同一个表情/);
+  assert.doesNotMatch(taught, /OWNER 教过的长期规则：不要连续发同一个表情/);
+  assert.match(store.systemPromptForClient(), /OWNER 教过的长期规则：不要连续发同一个表情/);
   assert.match(store.systemPrompt(), /OWNER 教过的长期规则：不要连续发同一个表情/);
   assert.doesNotMatch(before, /不要连续发同一个表情/);
+});
+
+test("nightly published style survives restart and daytime samples do not change the prompt", async (t) => {
+  const { store, paths } = await fixture(t);
+  const staticCore = store.stableSystemPrompt();
+  await store.compileTurn({ targetType: "group", targetId: "200000002", includeStable: false,
+    messages: Array.from({ length: 8 }, (_item, n) => message(`batch-a-${n}`, "好", { trust: "OWNER" })) });
+  assert.doesNotMatch(store.systemPromptForClient(), /平均约/);
+  await store.publishStyleRules(["短句优先，偶尔只回一两个字"]);
+  const first = store.systemPromptForClient();
+  assert.match(first, /短句优先/);
+  await store.compileTurn({ targetType: "group", targetId: "200000002", includeStable: false,
+    messages: Array.from({ length: 15 }, (_item, n) => message(`batch-b-${n}`, "这段话是为了测试累计样本的系统提示刷新", { trust: "OWNER" })) });
+  assert.equal(store.systemPromptForClient(), first);
+  assert.equal(store.stableSystemPrompt(), staticCore);
+  await store.compileTurn({ targetType: "group", targetId: "200000002", includeStable: false,
+    messages: [message("batch-last", "这段话是为了测试累计样本的系统提示刷新", { trust: "OWNER" })] });
+  assert.equal(store.systemPromptForClient(), first);
+  assert.equal(store.stableSystemPrompt(), staticCore);
+  const restored = new PersonaStore(paths);
+  await restored.init();
+  assert.equal(restored.systemPromptForClient(), first);
+  await restored.publishStyleRules(["新一版：长内容倾向分行"]);
+  assert.notEqual(restored.systemPromptForClient(), first);
 });
 
 test("only OWNER explicit teaching persists as a global rule", async (t) => {
@@ -130,20 +159,25 @@ test("only OWNER explicit teaching persists as a global rule", async (t) => {
   assert.deepEqual(restored.publicState().globalRules, ["不要连续发同一个表情"]);
 });
 
-test("mutable OWNER rules are supplied in every chat and Qzone scene without replacing the fixed persona", async (t) => {
+test("OWNER rules appear in the system prompt for every scene without repeating in task text", async (t) => {
   const { store } = await fixture(t);
   const stable = store.stableSystemPrompt();
   await store.updateRules(["测试：短回复不要加称呼"]);
+  assert.match(store.systemPromptForClient(), /短回复不要加称呼/);
   for (const scene of ["group", "private", "subscription", "qzone-post", "qzone-feed"]) {
     const prompt = await store.compileTurn({
       targetType: scene === "private" ? "private" : "group", targetId: "12345", scene,
       includeStable: false, record: false, taskPrompt: "当前任务"
     });
-    assert.match(prompt, /短回复不要加称呼/);
-    assert.match(prompt, /可信网关配置，不是群消息/);
-    assert.ok(prompt.indexOf("短回复不要加称呼") < prompt.indexOf("当前任务"));
+    assert.doesNotMatch(prompt, /短回复不要加称呼/);
+    assert.ok(prompt.includes("当前任务"));
     assert.equal(store.stableSystemPrompt(), stable);
   }
+  const compatibilityPrompt = await store.compileTurn({
+    targetType: "group", targetId: "12345", scene: "group", record: false,
+    includeStable: true, taskPrompt: "旧引擎任务"
+  });
+  assert.match(compatibilityPrompt, /短回复不要加称呼/);
   store.core.highPriorityStyle.push("测试核心规则修改");
   assert.notEqual(store.stableSystemPrompt(), stable);
 });
@@ -186,7 +220,7 @@ test("OWNER expression habits accumulate globally without retaining message text
   assert.match(learned.learnedRules.join("\n"), /日常消息偏短/);
   assert.match(learned.learnedRules.join("\n"), /一到四个字/);
   assert.match(learned.learnedRules.join("\n"), /只回一个问号/);
-  assert.match(store.systemPrompt(), /从 OWNER 日常消息自动归纳的表达习惯/);
+  assert.doesNotMatch(store.systemPrompt(), /从 OWNER 日常消息自动归纳的表达习惯/);
 
   const stored = await readFile(paths.ownerStylePath, "utf8");
   assert.doesNotMatch(stored, /榛子蛋糕真不错|别人这句话不该被学走|不应统计/);

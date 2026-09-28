@@ -8,6 +8,7 @@ import { MacActionClient } from "./automation/macos-actions.js";
 import { CodexClient } from "./codex/client.js";
 import { WorkBuddyClient } from "./workbuddy/client.js";
 import { PersonaStore } from "./persona/persona-store.js";
+import { DailyStyleCoordinator } from "./persona/daily-style-coordinator.js";
 import { ThreadReservationManager } from "./codex/thread-reservations.js";
 import { GroupWorker } from "./groups/group-worker.js";
 import { toPublicGroupState } from "./groups/group-state.js";
@@ -50,6 +51,7 @@ const personaStatePath = join(dataDir, "persona-state.json");
 const relationshipMemoryPath = join(dataDir, "relationship-memory.json");
 const personaRulesPath = join(dataDir, "persona-rules.json");
 const personaOwnerStylePath = join(dataDir, "persona-owner-style.json");
+const personaStyleSamplesPath = join(dataDir, "persona-style-samples.json");
 const { corePath: personaCorePath, examplesPath: personaExamplesPath } = resolvePersonaFiles(
   projectDir, process.env.CODEX_REMOTE_CONTACT_PERSONA_DIR
 );
@@ -58,6 +60,7 @@ const mediaRoot = join(runtimeDir, "qq-media");
 const stickerLibraryDir = join(runtimeDir, "qq-stickers");
 const stickerLabelWorkspaceRoot = join(runtimeDir, "sticker-label-jobs");
 const stickerCurationWorkspaceRoot = join(runtimeDir, "sticker-curation-jobs");
+const personaStyleWorkspaceRoot = join(runtimeDir, "persona-style-jobs");
 const groupWorkspaceRoot = process.env.CODEX_REMOTE_CONTACT_GROUP_WORKSPACE_ROOT || join(runtimeDir, "group-workspaces");
 
 const hubHost = process.env.CODEX_REMOTE_CONTACT_HOST || "127.0.0.1";
@@ -174,7 +177,8 @@ const personaStore = new PersonaStore({
   statePath: personaStatePath,
   relationshipsPath: relationshipMemoryPath,
   rulesPath: personaRulesPath,
-  ownerStylePath: personaOwnerStylePath
+  ownerStylePath: personaOwnerStylePath,
+  useClientSystemPrompt: engineKind === "workbuddy"
 });
 await personaStore.init();
 if (engineKind === "workbuddy") {
@@ -242,7 +246,6 @@ const codex = engineKind === "codex"
       cwd: projectDir,
       model: codexModel,
       effort: codexEffort,
-      systemPrompt: personaStore.stableSystemPrompt(),
       timeoutMs: agentTimeoutMs
     })
   : new WorkBuddyClient({
@@ -250,7 +253,7 @@ const codex = engineKind === "codex"
       cwd: projectDir,
       model: codexModel,
       effort: codexEffort,
-      systemPrompt: personaStore.stableSystemPrompt(),
+      systemPrompt: personaStore.systemPromptForClient(),
       timeoutMs: agentTimeoutMs
     });
 console.log(`agent engine: ${engineKind} (model=${codexModel}, effort=${codexEffort})`);
@@ -272,6 +275,12 @@ const recentEvents = [];
 const triggerManager = new TriggerManager({ store, allowedGroups, periodicMinutes: periodicTriggerMinutes });
 const privateTriggerManager = new TriggerManager({ store: privateStore, allowedGroups: null });
 const taskGate = new AgentTaskGate();
+const dailyStyle = new DailyStyleCoordinator({
+  filePath: personaStyleSamplesPath, workspaceRoot: personaStyleWorkspaceRoot,
+  persona: personaStore, codex, gate: taskGate,
+  canRun: () => agentDispatchStore.isEnabled(), onEvent: recordEvent
+});
+await dailyStyle.init();
 const worker = new GroupWorker({
   store, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager, subscriptionStore, automationClient, persona: personaStore,
   targetNameResolver: (groupId) => groupMetadata[groupId]?.groupName || null,
@@ -314,6 +323,7 @@ const threadReservations = new ThreadReservationManager({
 });
 await threadReservations.start();
 stickerCuration.start();
+dailyStyle.start();
 
 const seenMessages = new Map();
 const seenTtlMs = 10 * 60 * 1000;
@@ -701,6 +711,7 @@ async function handleOneBotEvent(payload) {
     });
   }
   const stored = await store.appendMessage(message);
+  await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
   recordEvent({ type: "message", groupId: stored.groupId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
   if (control) await triggerManager.request(stored.groupId, "control", stored);
@@ -780,6 +791,7 @@ async function handlePrivateMessage(payload) {
   await privateStore.addConversation(message.senderId);
   privateMetadata[message.senderId] ||= { displayName: message.senderName || null };
   const stored = await privateStore.appendMessage(message);
+  await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
   recordEvent({ type: "private-message", userId: stored.senderId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
   if (control) await privateTriggerManager.request(stored.senderId, "control", stored);
@@ -917,6 +929,7 @@ function publicState() {
     architecture: "target-owned-read-only-source-subscriptions",
     agentDispatch: agentDispatchStore.snapshot(),
     persona: personaStore.publicState(),
+    dailyStyle: dailyStyle.snapshot(),
     ai: {
       provider: engineKind === "codex" ? "codex-app-server" : "workbuddy-agent-sdk",
       model: codexModel,
@@ -1079,6 +1092,7 @@ async function maintenanceState() {
       relationshipMemory: relationshipMemoryPath,
       personaRules: personaRulesPath,
       personaOwnerStyle: personaOwnerStylePath,
+      personaStyleSamples: personaStyleSamplesPath,
       mediaRoot,
       stickerLibrary: stickerLibraryDir
     }
@@ -1419,6 +1433,7 @@ async function shutdown() {
   privateTriggerManager.stop();
   qzone.stop();
   stickerCuration.stop();
+  dailyStyle.stop();
   threadReservations.stop();
   clearInterval(subscriptionTimer);
   clearInterval(mediaCleanupTimer);

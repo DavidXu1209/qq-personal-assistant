@@ -344,7 +344,7 @@ export class WorkBuddyClient {
       cwd,
       outputSchema,
       sourceReadOnly: Boolean(qqToolContext?.requireSourceRead),
-      systemPrompt: /^sticker-(?:label|prune)-/u.test(String(threadId)) ? "" : this.systemPrompt,
+      systemPrompt: /^(?:sticker-(?:label|prune)|persona-style)-/u.test(String(threadId)) ? "" : this.systemPrompt,
       turnSandbox,
     });
     const turnId = response?.turn?.id;
