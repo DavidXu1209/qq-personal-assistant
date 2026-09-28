@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore } from "../src/storage/session-store.js";
 import { TriggerManager } from "../src/groups/trigger-manager.js";
-import { createLiveConversationTools, prepareLiveConversationPrompt, sendFinalTextFallback } from "../src/qq/live-conversation.js";
+import { createLiveConversationTools, prepareLiveConversationPrompt } from "../src/qq/live-conversation.js";
 
 async function fixture(t, oneBot = null) {
   const directory = await mkdtemp(join(tmpdir(), "crc-live-qq-test-"));
@@ -99,22 +99,6 @@ test("prefetch stops on reader failure and leaves source-only and non-live conte
   assert.equal(await prepareLiveConversationPrompt(source, "通知任务"), "通知任务");
   assert.equal(source.sourceReadCalled, false);
   assert.equal(await prepareLiveConversationPrompt(null, "普通任务"), "普通任务");
-});
-
-test("plain final model text is safely delivered when a live Agent forgot the send tool", async (t) => {
-  const { context, active, sent } = await fixture(t);
-  await context.liveTool("read_messages", {}, active);
-  assert.equal(await sendFinalTextFallback(context, "还行，现在活蹦乱跳的", active), true);
-  assert.equal(context.actionCount, 1);
-  assert.deepEqual(sent, [["text", "还行，现在活蹦乱跳的"]]);
-});
-
-test("legacy QQ directives are never leaked as fallback chat text", async (t) => {
-  const { context, active, sent } = await fixture(t);
-  await context.liveTool("read_messages", {}, active);
-  await assert.rejects(() => sendFinalTextFallback(context, "[[qq_file:/tmp/demo.txt]]", active), /旧式 QQ 动作标记/);
-  assert.deepEqual(sent, []);
-  assert.equal(context.actionCount, 0);
 });
 
 test("the conversation cannot end before reading its pending messages", async (t) => {

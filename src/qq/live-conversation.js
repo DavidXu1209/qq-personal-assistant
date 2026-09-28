@@ -28,21 +28,6 @@ export async function prepareLiveConversationPrompt(context, prompt) {
   ].join("\n\n");
 }
 
-export async function sendFinalTextFallback(context, text, active) {
-  if (!context?.readCalled || context.ended || context.failed || context.actionCount > 0) return false;
-  const reply = String(text || "").trim();
-  if (!reply) return false;
-  if (/\[\[\s*qq[_\\]/i.test(reply)) {
-    throw new Error("Agent 最终文本包含旧式 QQ 动作标记，未作为普通消息发送；待处理消息仍保留");
-  }
-  const delivered = await context.liveTool("send_message", { text: reply }, active);
-  if (delivered?.isError) {
-    const detail = delivered.content?.find((item) => item.type === "text")?.text;
-    throw new Error(detail || "Agent 最终文本未能发送到 QQ；待处理消息仍保留");
-  }
-  return true;
-}
-
 /** The scope and callback never leave the Node gateway process. */
 export function createLiveConversationTools({
   store, targetId, targetType, oneBot, fileManager, stickerManager, qzone,

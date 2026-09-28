@@ -913,6 +913,34 @@ test("WorkBuddy Agent private turn reads its current message through the scoped 
   assert.deepEqual(sent, ["私聊收到。"]);
 });
 
+test("WorkBuddy Agent private final text never sends without the MCP send_message tool", async (t) => {
+  const fixture = await storesFixture(t, [], [OWNER_QQ_ID]);
+  await fixture.privateSessions.setCodexConfig(OWNER_QQ_ID, { workingMode: "agent", permissionMode: "dangerFullAccess" });
+  const sent = [];
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  codex.runTurn = async ({ qqToolContext }) => {
+    const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "private-final-only" });
+    assert.match(read.content[0].text, /私聊只读后沉默/);
+    return { text: "这只是最终文字，不应发到私聊。", turnId: "private-final-only", compacted: false };
+  };
+  const worker = new PrivateWorker({
+    store: fixture.privateSessions, codex, followupDurationMs: 0,
+    oneBot: { async sendPrivateMessage(_id, text) { sent.push(text); return { ok: true, status: 200 }; } },
+    mediaManager: { removeMessages: async () => {} },
+    triggerManager: { reconsiderPending: async () => {} }
+  });
+  const pending = await fixture.privateSessions.appendMessage({
+    ...sourceMessage("private-final-only", "私聊只读后沉默", "member"),
+    groupId: OWNER_QQ_ID, senderId: OWNER_QQ_ID, trust: "OWNER", mentionedBot: true, source: "qq"
+  });
+  await fixture.privateSessions.requestTrigger(OWNER_QQ_ID, "mention", pending);
+  await worker.kick(OWNER_QQ_ID);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(fixture.privateSessions.snapshot(OWNER_QQ_ID).pendingMessages.map((item) => item.messageId), ["private-final-only"]);
+  assert.equal(fixture.privateSessions.snapshot(OWNER_QQ_ID).lastCompletedReply, null);
+});
+
 test("read-only source groups are rejected by QQ text, image, face, poke and file APIs", async () => {
   let requests = 0;
   const oneBot = new OneBotClient({

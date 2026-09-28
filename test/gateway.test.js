@@ -282,6 +282,28 @@ test("WorkBuddy Agent group turn passes only a compact prompt and exposes its fr
   assert.equal(fixture.store.snapshot("123").pendingMessages.length, 0);
 });
 
+test("WorkBuddy Agent group final text never sends without the MCP send_message tool", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  const sent = [];
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  codex.runTurn = async ({ qqToolContext }) => {
+    const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "group-final-only" });
+    assert.match(read.content[0].text, /只读后沉默/);
+    return { text: "这只是最终文字，不应发到 QQ。", turnId: "group-final-only", compacted: false };
+  };
+  const worker = createWorker({
+    store: fixture.store, codex,
+    oneBot: { async sendGroupMessage(_id, text) { sent.push(text); return { ok: true, status: 200 }; } }
+  });
+  const pending = await fixture.store.appendMessage(message("123", "group-final-only", "只读后沉默", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  await worker.kick("123");
+  assert.deepEqual(sent, []);
+  assert.deepEqual(fixture.store.snapshot("123").pendingMessages.map((item) => item.messageId), ["group-final-only"]);
+  assert.equal(fixture.store.snapshot("123").lastCompletedReply, null);
+});
+
 test("periodic Agent completion clears read messages when it returns without sending or explicitly ending", async (t) => {
   const fixture = await createStoreFixture(t, ["123"]);
   await fixture.store.setCodexConfig("123", { workingMode: "agent", permissionMode: "dangerFullAccess" });

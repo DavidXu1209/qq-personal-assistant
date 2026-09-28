@@ -8,7 +8,7 @@ import {
   THREAD_INSTRUCTIONS_REVISION
 } from "../security/policy.js";
 import { parseQqDeliveryDirectives } from "./file-directive.js";
-import { createLiveConversationTools, sendFinalTextFallback } from "./live-conversation.js";
+import { createLiveConversationTools } from "./live-conversation.js";
 import { QqMessageReader } from "./message-reader.js";
 import { ConversationFollowup } from "./conversation-followup.js";
 import { StickerLabelCoordinator } from "./sticker-label-coordinator.js";
@@ -434,7 +434,6 @@ export class PrivateWorker {
 
       this.store.assertReplyEnabled(userId);
       if (useMcpRead) {
-        await sendFinalTextFallback(qqToolContext, result.text, result);
         if (qqToolContext.failed) throw new Error("本轮 QQ 操作失败；待处理消息仍保留");
         const silentScheduledCompletion = work.trigger.reason === "scheduled"
           && qqToolContext.actionCount === 0 && qqToolContext.readCalled;
