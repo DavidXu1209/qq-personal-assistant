@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as pause } from "node:timers/promises";
 import { AgentTaskGate } from "../src/qq/agent-task-gate.js";
-import { EphemeralStickerCurator, StickerCurationCoordinator, nextStickerCheck, parseStickerSelection } from "../src/qq/sticker-curator.js";
+import { EphemeralStickerCurator, StickerCurationCoordinator, nextStickerCheck, parseStickerSelection, selectStickerIdsFromRatings } from "../src/qq/sticker-curator.js";
 import { QqStickerStore } from "../src/qq/sticker-store.js";
 import { StickerLabelCoordinator } from "../src/qq/sticker-label-coordinator.js";
 import { GroupWorker } from "../src/groups/group-worker.js";
@@ -73,6 +73,26 @@ test("selection rejects wrong counts, repeated and invented ids", () => {
   for (const keepIds of [ids.slice(1), [...ids.slice(1), ids[1]], [...ids.slice(1), "fake"]]) {
     assert.throws(() => parseStickerSelection(JSON.stringify({ keepIds }), entries), /真实表情 ID/);
   }
+});
+
+test("complete vision ratings deterministically produce an exact fallback keep-list", () => {
+  const entries = Array.from({ length: 114 }, (_, n) => ({
+    id: `id-${n.toString().padStart(3, "0")}`,
+    receiveCount: n % 5,
+    sendCount: n % 3
+  }));
+  const ratings = entries.map((entry, n) => ({
+    id: entry.id,
+    drama: n % 11,
+    usefulness: Math.floor(n / 11),
+    category: `category-${n % 8}`
+  }));
+  const selected = selectStickerIdsFromRatings(entries, ratings, 80);
+  assert.equal(selected.length, 80);
+  assert.equal(new Set(selected).size, 80);
+  assert.ok(selected.every((id) => entries.some((entry) => entry.id === id)));
+  assert.deepEqual(selectStickerIdsFromRatings(entries, ratings, 80), selected);
+  assert.throws(() => selectStickerIdsFromRatings(entries, ratings.slice(1), 80), /评分不完整/);
 });
 
 test("retaining 80 atomically archives exclusions into the blacklist and survives restart", async (t) => {
@@ -149,6 +169,30 @@ test("temporary selector visually reviews every batch, uses the label model, and
   assert.equal(deleted.purgeProject, true);
   await assert.rejects(stat(deleted.cwd), { code: "ENOENT" });
   assert.equal(manager.publicState().total, 101, "selection itself must not mutate the real library");
+});
+
+test("malformed final keep-list falls back to the completed model ratings", async (t) => {
+  const { root, manager } = await fixture(t, 114);
+  const entries = manager.curationCatalog();
+  let selectionAttempts = 0;
+  const selector = new EphemeralStickerCurator({ workspaceRoot: join(root, "jobs"), codex: {
+    startThread: async (options) => options.threadId,
+    async runTurn(options) {
+      if (!options.imagePaths) {
+        selectionAttempts += 1;
+        return { text: JSON.stringify({ keepIds: entries.slice(0, 79).map((entry) => entry.id) }) };
+      }
+      const line = options.prompt.split("\n").find((value) => value.startsWith("本批 "));
+      const batch = JSON.parse(line.slice(line.indexOf("[")));
+      return { text: JSON.stringify({ ratings: batch.map(({ id }, n) => ({ id, drama: n % 11, usefulness: 10 - (n % 11), category: "常用" })) }) };
+    },
+    deleteThread: async () => {}
+  } });
+  const result = await selector.select(entries);
+  assert.equal(selectionAttempts, 2);
+  assert.equal(result.selectionStrategy, "ratings-fallback");
+  assert.equal(result.keepIds.length, 80);
+  assert.equal(new Set(result.keepIds).size, 80);
 });
 
 test("invalid vision results clean the disposable session and leave every sticker intact", async (t) => {

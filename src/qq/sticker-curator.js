@@ -49,6 +49,30 @@ function parseRatings(text, entries) {
   return ratings.map(({ id, drama, usefulness, category }) => ({ id, drama, usefulness, category }));
 }
 
+export function selectStickerIdsFromRatings(entries, ratings, keepCount = CURATION_KEEP) {
+  if (!Number.isInteger(keepCount) || keepCount <= 0 || keepCount > entries.length) {
+    throw new Error("表情评分无法生成有效保留名单；表情库未修改");
+  }
+  const byId = new Map(ratings.map((rating) => [rating.id, rating]));
+  if (byId.size !== entries.length || entries.some((entry) => !byId.has(entry.id))) {
+    throw new Error("表情评分不完整；表情库未修改");
+  }
+  return entries
+    .map((entry) => {
+      const rating = byId.get(entry.id);
+      // The vision model still makes the decision through its drama and
+      // usefulness ratings. Real receive/send history only breaks close ties,
+      // so a malformed 80-ID response cannot waste the whole nightly review.
+      const score = rating.usefulness * 2 + rating.drama
+        + Math.min(Number(entry.sendCount) || 0, 20) * 0.08
+        + Math.min(Number(entry.receiveCount) || 0, 20) * 0.03;
+      return { id: entry.id, score, usefulness: rating.usefulness, drama: rating.drama };
+    })
+    .sort((a, b) => b.score - a.score || b.usefulness - a.usefulness || b.drama - a.drama || a.id.localeCompare(b.id))
+    .slice(0, keepCount)
+    .map(({ id }) => id);
+}
+
 /** Bounded disposable vision batches plus a text-only selection session. */
 export class EphemeralStickerCurator {
   constructor({ codex, workspaceRoot, getSettings = () => ({ model: "hy3" }), canRun = () => true } = {}) {
@@ -108,15 +132,19 @@ export class EphemeralStickerCurator {
           `只返回 JSON：{"keepIds":["真实表情ID"]}，必须恰好 ${keepCount} 个不重复的 ID。`
         ].join("\n");
       let keepIds;
+      let selectionStrategy = "model-selection";
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = await runIsolated(`selection-${attempt}`, { prompt: selectionPrompt
           + (attempt ? `\n上次格式校验未通过。不要解释或调用工具，只输出包含恰好 ${keepCount} 个真实 ID 的 keepIds JSON 对象。` : "") });
         try { keepIds = parseStickerSelection(result.text, entries, keepCount); break; }
         catch (error) {
-          if (attempt || !this.canRun()) throw error;
+          if (!attempt && this.canRun()) continue;
+          if (!this.canRun()) throw error;
+          keepIds = selectStickerIdsFromRatings(entries, ratings, keepCount);
+          selectionStrategy = "ratings-fallback";
         }
       }
-      selected = { keepIds, model };
+      selected = { keepIds, model, selectionStrategy };
     } catch (error) { failure = error; }
     finally {
       if (threadId) {
@@ -205,7 +233,9 @@ export class StickerCurationCoordinator {
       } });
       if (!this.canRun()) throw new Error("Agent 总开关已关闭；表情库未修改");
       const removed = await this.stickerManager.retainSelection(entries, result.keepIds);
-      this.state = { ...this.state, status: "completed", model: result.model, retainedCount: CURATION_KEEP, removedCount: removed.length, completedAt: this.clock().toISOString(), error: null };
+      this.state = { ...this.state, status: "completed", model: result.model,
+        selectionStrategy: result.selectionStrategy || "model-selection",
+        retainedCount: CURATION_KEEP, removedCount: removed.length, completedAt: this.clock().toISOString(), error: null };
     } catch (error) {
       this.state.status = this.canRun() ? "failed" : "queued";
       this.state.error = error.message;
