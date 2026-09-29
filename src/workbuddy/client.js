@@ -265,7 +265,6 @@ export class WorkBuddyClient {
     model = this.model,
     effort = this.effort,
     contextTokenLimit = "auto",
-    workingMode = "agent",
     cwd = null,
     threadSandbox = "readOnly",
     ephemeral = false
@@ -279,7 +278,7 @@ export class WorkBuddyClient {
       // client 重建，第一轮就重建是「空回复」的来源之一
       effort: effort || null,
       contextTokenLimit,
-      workingMode,
+      workingMode: "agent",
       sandbox: threadSandbox,
       ephemeral: Boolean(ephemeral),
       systemPrompt: ephemeral ? "" : this.systemPrompt,
@@ -298,7 +297,6 @@ export class WorkBuddyClient {
     model = this.model,
     effort = this.effort,
     contextTokenLimit = "auto",
-    workingMode = "agent",
     cwd = null
   } = {}) {
     await this.ensureProcess();
@@ -310,7 +308,7 @@ export class WorkBuddyClient {
         effort: effort || null,
         threadSandbox,
         contextTokenLimit,
-        workingMode,
+        workingMode: "agent",
         systemPrompt: this.systemPrompt,
       });
     } catch (error) {
@@ -321,7 +319,7 @@ export class WorkBuddyClient {
 
   async runTurn({
     groupId, threadId, prompt, imagePaths = [], turnSandbox = { type: "readOnly" },
-    model = this.model, effort = this.effort, contextTokenLimit = "auto", workingMode = "agent",
+    model = this.model, effort = this.effort, contextTokenLimit = "auto",
     cwd = null, outputSchema = null, qqToolContext = null, onDelta = null,
     prefetchQqMessages = true, refreshClientBeforeTurn = false, turnTimeoutMs = this.timeoutMs,
   }) {
@@ -344,7 +342,7 @@ export class WorkBuddyClient {
       model: normalizeModel(model),
       effort: effort || null,
       contextTokenLimit,
-      workingMode,
+      workingMode: "agent",
       cwd,
       outputSchema,
       refreshClientBeforeTurn: Boolean(refreshClientBeforeTurn),

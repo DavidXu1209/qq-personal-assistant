@@ -562,12 +562,11 @@ test("AUTO retries a malformed structured result once and re-reads the same MCP 
 });
 
 for (const targetType of ["group", "private"]) {
-  for (const workingMode of ["ask", "agent"]) {
-  test(`${targetType} ${workingMode}: due AUTO waits for an active conversation and survives later message wake-ups`, async (t) => {
+  test(`${targetType} Agent: due AUTO waits for an active conversation and survives later message wake-ups`, async (t) => {
     const targetId = targetType === "group" ? "12345" : OWNER_QQ_ID;
     const fixture = await storesFixture(t, targetType === "group" ? [targetId] : [], targetType === "private" ? [targetId] : []);
     const sessions = targetType === "group" ? fixture.sessions : fixture.privateSessions;
-    await sessions.setCodexConfig(targetId, { workingMode, permissionMode: workingMode === "agent" ? "dangerFullAccess" : "readOnly" });
+    await sessions.setCodexConfig(targetId, { workingMode: "agent", permissionMode: "dangerFullAccess" });
     let now = new Date("2026-09-13T04:00:00.000Z");
     fixture.subscriptions.clock = () => new Date(now);
     await fixture.subscriptions.upsertSubscription({ targetType, targetId, sourceGroupId: "54321", mode: "AUTO", collectionDelayMinutes: 1 });
@@ -590,21 +589,16 @@ for (const targetType of ["group", "private"]) {
       runTurn: async ({ outputSchema, qqToolContext, prompt }) => {
         if (!outputSchema) {
           turns.push("normal");
-          if (workingMode === "agent") {
-            const read = await qqToolContext.liveTool("read_messages");
-            assert.equal(read.isError, false);
-            assert.match(read.content[0].text, /先回答这条消息/);
-          }
+          const read = await qqToolContext.liveTool("read_messages");
+          assert.equal(read.isError, false);
+          assert.match(read.content[0].text, /先回答这条消息/);
           startFirst();
           await firstGate;
-          if (workingMode === "agent") {
-            const sent = await qqToolContext.liveTool("send_message", { text: "先前问题已回答。" });
-            assert.equal(sent.isError, false);
-            const ended = await qqToolContext.liveTool("end_conversation");
-            assert.equal(ended.isError, false);
-            return { text: "", turnId: "normal-turn" };
-          }
-          return { text: "先前问题已回答。", turnId: "normal-turn" };
+          const sent = await qqToolContext.liveTool("send_message", { text: "先前问题已回答。" });
+          assert.equal(sent.isError, false);
+          const ended = await qqToolContext.liveTool("end_conversation");
+          assert.equal(ended.isError, false);
+          return { text: "", turnId: "normal-turn" };
         }
         turns.push("auto");
         const result = handleQqMcpTool({ name: "read_source_messages", context: qqToolContext });
@@ -654,13 +648,12 @@ for (const targetType of ["group", "private"]) {
     assert.equal(fixture.subscriptions.listSubscriptions()[0].state.pendingCount, 0);
     assert.equal(sessions.snapshot(targetId).pendingMessages.length, 0);
   });
-  }
 
   test(`${targetType}: concurrent AUTO sources queue as separate MCP-read turns with mandatory summaries`, async (t) => {
     const targetId = targetType === "group" ? "12345" : OWNER_QQ_ID;
     const fixture = await storesFixture(t, targetType === "group" ? [targetId] : [], targetType === "private" ? [targetId] : []);
     const sessions = targetType === "group" ? fixture.sessions : fixture.privateSessions;
-    await sessions.setCodexConfig(targetId, { workingMode: "ask", permissionMode: "readOnly", calendarRemindersEnabled: true });
+    await sessions.setCodexConfig(targetId, { workingMode: "agent", permissionMode: "readOnly", calendarRemindersEnabled: true });
     let now = new Date("2026-09-13T04:00:00.000Z");
     fixture.subscriptions.clock = () => new Date(now);
     await fixture.subscriptions.upsertSubscription({ targetType, targetId, sourceGroupId: "54321", mode: "AUTO", collectionDelayMinutes: 1 });
@@ -678,7 +671,7 @@ for (const targetType of ["group", "private"]) {
       resumeThread: async () => {},
       runTurn: async ({ prompt, qqToolContext, outputSchema, workingMode, turnSandbox }) => {
         assert.ok(outputSchema);
-        assert.equal(workingMode, "agent", "AUTO keeps MCP visible even when the conversation is set to Ask");
+        assert.equal(workingMode, "agent", "AUTO always runs in the single Agent mode");
         assert.equal(turnSandbox.type, "readOnly");
         assert.doesNotMatch(prompt, /学院会议明天举行|书院今晚领取材料/);
         assert.equal(qqToolContext.requireSourceRead, true);

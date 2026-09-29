@@ -49,7 +49,7 @@ export class EphemeralStickerLabeler {
         model,
         effort: "auto",
         contextTokenLimit: "auto",
-        workingMode: "ask",
+        workingMode: "agent",
         cwd: jobDir,
         threadSandbox: { type: "readOnly" },
         ephemeral: true
@@ -62,7 +62,7 @@ export class EphemeralStickerLabeler {
         model,
         effort: "auto",
         contextTokenLimit: "auto",
-        workingMode: "ask",
+        workingMode: "agent",
         cwd: jobDir,
         turnSandbox: { type: "readOnly" },
         onDelta: () => {}

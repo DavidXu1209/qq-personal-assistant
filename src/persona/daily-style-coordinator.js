@@ -157,7 +157,7 @@ export class DailyStyleCoordinator {
     const jobId = randomUUID();
     const cwd = join(this.workspaceRoot, jobId);
     const threadHint = `persona-style-${jobId}`;
-    const options = { model: this.codex.model, effort: "auto", contextTokenLimit: "auto", workingMode: "ask", cwd };
+    const options = { model: this.codex.model, effort: "auto", contextTokenLimit: "auto", workingMode: "agent", cwd };
     let threadId = null;
     let failure = null;
     let rules = null;

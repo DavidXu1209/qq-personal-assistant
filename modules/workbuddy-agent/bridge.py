@@ -142,8 +142,8 @@ FALLBACK_MODELS = [
 
 # Codex 的沙箱语汇 -> WorkBuddy 的权限模式
 SANDBOX_TO_PERMISSION = {
-    "readOnly": "plan",
-    "read-only": "plan",
+    "readOnly": "dontAsk",
+    "read-only": "dontAsk",
     "workspaceWrite": "acceptEdits",
     "workspace-write": "acceptEdits",
     "dangerFullAccess": "bypassPermissions",
@@ -157,13 +157,7 @@ DEFAULT_EFFORT = "auto"
 # auto 表示不传 --effort，交给当前模型决定；只保留 Codex 历史档位的安全回退。
 EFFORT_ALIASES = {"ultra": "max", "none": None, "auto": None}
 
-WORKING_MODES = {"agent", "plan", "ask"}
-ASK_TOOLS = ["Read", "WebFetch", "WebSearch", "Glob", "Grep"]
-ASK_MODE_REMINDER = """<ask_mode>
-Ask mode is active. Only answer questions, read files, and analyze information.
-Do not modify files, run commands, or change external state. If the user asks for
-an action, explain that Agent mode must be selected first.
-</ask_mode>"""
+READ_ONLY_TOOLS = ["Read", "WebFetch", "WebSearch", "Glob", "Grep"]
 
 
 def full_access_roots() -> list[str]:
@@ -187,10 +181,6 @@ def full_access_roots() -> list[str]:
 
 def session_extra_args(session: "Session") -> Dict[str, str]:
     args: Dict[str, str] = {"autocompact": session.context_token_limit}
-    if can_exit_plan_mode(session):
-        # A resumed legacy session may still be in Plan mode. If it exits,
-        # restore only the permission level already selected by the gateway.
-        args["permission-mode-before-plan"] = session.permission_mode
     # Do not pass WorkBuddy CLI --json-schema here.  Some otherwise capable
     # models answer the AUTO notice correctly but never invoke the CLI's
     # synthetic StructuredOutput tool.  The CLI then keeps injecting
@@ -205,12 +195,6 @@ def session_extra_args(session: "Session") -> Dict[str, str]:
             separators=(",", ":"),
         )
     return args
-
-
-def can_exit_plan_mode(session: "Session") -> bool:
-    return (session.working_mode == "agent" and not session.source_read_only
-            and session.permission_mode in ("acceptEdits", "bypassPermissions"))
-
 
 def log(*args: Any) -> None:
     """日志一律走 stderr，绝不污染 stdout 的协议流。"""
@@ -252,9 +236,9 @@ def normalize_context_limit(value: Any) -> str:
     return str(min(1_000_000, max(100_000, numeric)))
 
 
-def normalize_working_mode(value: Any) -> str:
-    text = str(value or "agent").strip().lower()
-    return text if text in WORKING_MODES else "agent"
+def normalize_working_mode(_value: Any) -> str:
+    """The headless gateway exposes one non-interactive working mode: Agent."""
+    return "agent"
 
 
 def normalize_system_prompt(value: Any) -> str:
@@ -313,7 +297,7 @@ class Session:
         self.client: Any = None
         self.model: Optional[str] = None
         self.effort: Optional[str] = None
-        self.permission_mode: str = "plan"
+        self.permission_mode: str = "dontAsk"
         self.working_mode: str = "agent"
         self.context_token_limit: str = "auto"
         self.system_prompt: str = ""
@@ -591,6 +575,80 @@ class Bridge:
                 await self._retire_client(session, replacement, exc)
             raise
 
+    @staticmethod
+    def _is_legacy_plan_mode_error(exc: BaseException) -> bool:
+        message = str(exc).strip().lower()
+        return "exitplanmode" in message and (
+            "not found in agent cli" in message
+            or "does not exist in the current tool set" in message
+        )
+
+    async def _migrate_legacy_plan_session(self, session: Session) -> None:
+        """Fork one legacy Plan transcript and exit Plan without exposing QQ tools.
+
+        Older gateway versions mapped read-only turns to WorkBuddy Plan mode.  A
+        resumed transcript keeps that internal mode even when the new process is
+        launched as Agent, then tries to call ``ExitPlanMode``.  Current normal
+        turns intentionally do not expose that mode tool.  Migrate only after the
+        exact compatibility error: fork the transcript, allow one ExitPlanMode
+        call, restore the session's real permission mode, then remap the logical
+        gateway thread to the repaired SDK session.
+        """
+        from codebuddy_agent_sdk import (
+            CodeBuddyAgentOptions, CodeBuddySDKClient, PermissionResultAllow,
+            PermissionResultDeny, ResultMessage,
+        )
+
+        old_sdk_id = session.sdk_session_id
+        if not old_sdk_id:
+            raise RuntimeError("旧 Plan 会话缺少可迁移的 SDK session id")
+
+        async def allow_exit_plan(name: str, _input: Dict[str, Any], _options: Any):
+            if name == "ExitPlanMode":
+                return PermissionResultAllow()
+            return PermissionResultDeny(message="Legacy mode migration permits only ExitPlanMode")
+
+        extra_args = session_extra_args(session)
+        extra_args["permission-mode-before-plan"] = session.permission_mode
+        options = CodeBuddyAgentOptions(
+            cwd=session.cwd,
+            model=session.model,
+            effort=session.effort,
+            permission_mode="default",
+            tools=["ExitPlanMode"],
+            mcp_servers={},
+            setting_sources=DEFAULT_SETTING_SOURCES,
+            include_partial_messages=False,
+            request_timeout_ms=CONTROL_TIMEOUT_MS,
+            extra_args=extra_args,
+            resume=old_sdk_id,
+            fork_session=True,
+            can_use_tool=allow_exit_plan,
+        )
+        repair_client = CodeBuddySDKClient(options=options)
+        repaired_sdk_id = None
+        try:
+            await repair_client.connect()
+            await repair_client.query(
+                "这是旧会话模式迁移。只调用 ExitPlanMode 退出残留 Plan 状态并恢复 Agent。"
+                "不要发送消息。不要读取或修改文件。不要执行其他动作。"
+            )
+            async for message in repair_client.receive_response():
+                if isinstance(message, ResultMessage):
+                    repaired_sdk_id = getattr(message, "session_id", None)
+        finally:
+            await self._disconnect_client(repair_client)
+
+        if not repaired_sdk_id or repaired_sdk_id == old_sdk_id:
+            raise RuntimeError("旧 Plan 会话迁移没有生成新的 Agent session")
+        session.sdk_session_id = repaired_sdk_id
+        session.client = None
+        self._remember_session_id(session.thread_id, repaired_sdk_id)
+        log(
+            f"旧 Plan 会话已迁移到 Agent thread={session.thread_id} "
+            f"sdk={old_sdk_id}->{repaired_sdk_id}"
+        )
+
     # ---------------- thread ----------------
 
     async def _make_client(self, session: Session, resume: Optional[str] = None):
@@ -603,8 +661,6 @@ class Bridge:
             # This approves only our local MCP route. The Node gateway still
             # validates the active turn, OWNER/poke scope and exact sticker ID.
             requested = _input.get("toolName") if name == "DeferExecuteTool" else name
-            if requested == "ExitPlanMode" and can_exit_plan_mode(session):
-                return PermissionResultAllow()
             if isinstance(requested, str) and requested.startswith("mcp__qq_gateway__"):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="No permission handler provided")
@@ -640,7 +696,7 @@ class Bridge:
         mcp_servers = {}
         # Read-only scheduled QQ Space turns still need the scoped gateway MCP.
         # The Node active-turn context denies tools outside that scheduled task.
-        if (not session.ephemeral or session.working_mode == "agent") and mcp_endpoint and mcp_secret:
+        if not session.ephemeral and mcp_endpoint and mcp_secret:
             mcp_servers["qq_gateway"] = {
                 "command": shutil.which("node") or "node",
                 "args": [os.path.join(os.path.dirname(__file__), "qq-mcp-stdio.mjs"), session.thread_id],
@@ -657,21 +713,16 @@ class Bridge:
                 },
             }
         system_parts = [session.system_prompt] if session.system_prompt else []
-        if session.working_mode == "ask":
-            system_parts.append(ASK_MODE_REMINDER)
         opts = CodeBuddyAgentOptions(
             cwd=session.cwd,
             model=session.model,
             effort=session.effort,
             permission_mode=session.permission_mode,
-            # No interactive plan-approval UI. Block new Plan mode; only a
-            # legacy Agent session may exit a previously persisted plan, with
-            # the restored permission pinned to the gateway's current scope.
-            disallowed_tools=["EnterPlanMode"] + ([] if can_exit_plan_mode(session) else ["ExitPlanMode"]),
             # --tools selects built-in tools; MCP tools are added by the server
             # manager. AUTO retains its broker-only built-ins and scoped source
             # reader, which the inline MCP config makes directly available.
-            tools=["ToolSearch", "DeferExecuteTool"] if session.source_read_only else ASK_TOOLS if session.working_mode == "ask" else None,
+            tools=["ToolSearch", "DeferExecuteTool"] if session.source_read_only
+            else READ_ONLY_TOOLS if session.permission_mode == "dontAsk" else None,
             mcp_servers=mcp_servers,
             system_prompt=AppendSystemPrompt(append="\n\n".join(system_parts))
             if system_parts else None,
@@ -708,7 +759,7 @@ class Bridge:
         session.working_mode = normalize_working_mode(params.get("workingMode"))
         session.system_prompt = normalize_system_prompt(params.get("systemPrompt"))
         session.permission_mode = SANDBOX_TO_PERMISSION.get(
-            str(params.get("sandbox") or "readOnly"), "plan"
+            str(params.get("sandbox") or "readOnly"), "dontAsk"
         )
         log(
             f"thread/start id={thread_id} cwd={cwd} model={model} effort={session.effort or 'auto'} "
@@ -948,61 +999,79 @@ class Bridge:
                     await self._disconnect_client(old_client)
                     log(f"发送校验轮次重新连接原会话 thread={turn.thread_id}")
 
-                client = session.client
-                if client is None:
-                    client = await self._make_client(session, resume=session.sdk_session_id)
-                emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
-                    "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "client_ready"}})
-                # Permission can still change within a turn, but model and
-                # context are launch parameters: reconnect the same SDK session.
-                if permission_mode != session.permission_mode:
-                    try:
-                        await client.set_permission_mode(permission_mode)
-                        session.permission_mode = permission_mode
-                    except Exception as exc:
-                        log(f"set_permission_mode 失败（忽略）: {exc}")
-
-                client = await self._send_prompt_resilient(
-                    session, client, prompt, image_paths
-                )
-                emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
-                    "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "prompt_sent"}})
-
-                result_message = None
-                async for message in client.receive_response():
-                    if turn.cancelled:
-                        break
+                legacy_plan_recovered = False
+                while True:
+                    client = session.client
+                    if client is None:
+                        client = await self._make_client(session, resume=session.sdk_session_id)
                     emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
-                        "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "response"}})
-                    if isinstance(message, ErrorMessage):
-                        raise WorkBuddyModelFailure(message.error or "WorkBuddy 返回未知错误")
-                    if isinstance(message, ResultMessage):
-                        result_message = message
-                        # SDK 的真实会话 id：重建 client / 网关重启后的续接全靠它
-                        sdk_id = getattr(message, "session_id", None)
-                        if sdk_id:
-                            session.sdk_session_id = sdk_id
-                            self._remember_session_id(turn.thread_id, sdk_id)
-                    model_error = model_message_error(message)
-                    if model_error:
-                        raise WorkBuddyModelFailure(model_error)
-                    if isinstance(message, AssistantMessage):
-                        chunk = "".join(
-                            b.text for b in message.content if isinstance(b, TextBlock)
-                        )
-                        if chunk:
-                            if chunk.startswith("Empty stream: upstream gateway sent only placeholder chunks"):
-                                raise WorkBuddyModelFailure(chunk)
-                            turn.text += chunk
-                            emit({
-                                "jsonrpc": "2.0",
-                                "method": "item/agentMessage/delta",
-                                "params": {
-                                    "threadId": turn.thread_id,
-                                    "turnId": turn.turn_id,
-                                    "delta": chunk,
-                                },
-                            })
+                        "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "client_ready"}})
+                    # Permission can still change within a turn, but model and
+                    # context are launch parameters: reconnect the same SDK session.
+                    if permission_mode != session.permission_mode:
+                        try:
+                            await client.set_permission_mode(permission_mode)
+                            session.permission_mode = permission_mode
+                        except Exception as exc:
+                            log(f"set_permission_mode 失败（忽略）: {exc}")
+
+                    client = await self._send_prompt_resilient(
+                        session, client, prompt, image_paths
+                    )
+                    emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                        "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "prompt_sent"}})
+
+                    result_message = None
+                    try:
+                        async for message in client.receive_response():
+                            if turn.cancelled:
+                                break
+                            emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                                "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "response"}})
+                            if isinstance(message, ErrorMessage):
+                                raise WorkBuddyModelFailure(message.error or "WorkBuddy 返回未知错误")
+                            if isinstance(message, ResultMessage):
+                                result_message = message
+                                # SDK 的真实会话 id：重建 client / 网关重启后的续接全靠它
+                                sdk_id = getattr(message, "session_id", None)
+                                if sdk_id:
+                                    session.sdk_session_id = sdk_id
+                                    self._remember_session_id(turn.thread_id, sdk_id)
+                            model_error = model_message_error(message)
+                            if model_error:
+                                raise WorkBuddyModelFailure(model_error)
+                            if isinstance(message, AssistantMessage):
+                                chunk = "".join(
+                                    b.text for b in message.content if isinstance(b, TextBlock)
+                                )
+                                if chunk:
+                                    if chunk.startswith("Empty stream: upstream gateway sent only placeholder chunks"):
+                                        raise WorkBuddyModelFailure(chunk)
+                                    turn.text += chunk
+                                    emit({
+                                        "jsonrpc": "2.0",
+                                        "method": "item/agentMessage/delta",
+                                        "params": {
+                                            "threadId": turn.thread_id,
+                                            "turnId": turn.turn_id,
+                                            "delta": chunk,
+                                        },
+                                    })
+                    except Exception as exc:
+                        if (not legacy_plan_recovered
+                                and self._is_legacy_plan_mode_error(exc)):
+                            legacy_plan_recovered = True
+                            turn.text = ""
+                            await self._retire_client(session, client, exc)
+                            await self._migrate_legacy_plan_session(session)
+                            emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                                "threadId": turn.thread_id,
+                                "turnId": turn.turn_id,
+                                "stage": "legacy_plan_migrated",
+                            }})
+                            continue
+                        raise
+                    break
 
                 if not turn.cancelled and not turn.text.strip():
                     fallback = None

@@ -8,7 +8,7 @@ const els = Object.fromEntries([
   "addPrivateButton", "privateForm", "privateUserId", "privateDisplayName", "privateFormStatus", "savePrivateButton", "cancelPrivateButton",
   "hubStatus", "oneBotStatus", "codexStatus", "sessionDetails", "subscriptionDetails", "subscriptionCount", "subscriptionList",
   "agentSettingsDetails", "agentSettingsSummary", "agentSettingsForm", "agentModel", "agentReasoningEffort",
-  "agentContextTokenLimit", "agentWorkingMode", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
+  "agentContextTokenLimit", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
   "agentSettingsHint", "agentSettingsStatus", "saveAgentSettingsButton",
   "personaDetails", "personaSummary", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview",
   "personaNameForm", "personaNameInput", "personaNameStatus", "savePersonaNameButton",
@@ -402,29 +402,25 @@ function renderAgentSettings(item) {
     calendarRemindersEnabled: true
   };
   const model = modelInfo(config.model);
-  els.agentSettingsSummary.textContent = `${workModeLabel(config.workingMode)} · ${permissionModeLabel(config.permissionMode)} · ${model?.displayName || config.model || "默认"} · ${effortLabel(config.reasoningEffort)} · 自动化${config.calendarRemindersEnabled === false ? "关" : "开"}`;
-  const nextSignature = JSON.stringify([item.key, config, state?.ai?.availableModels, state?.ai?.contextTokenOptions, state?.ai?.workModeOptions, state?.ai?.permissionModeOptions]);
+  els.agentSettingsSummary.textContent = `${permissionModeLabel(config.permissionMode)} · ${model?.displayName || config.model || "默认"} · ${effortLabel(config.reasoningEffort)} · 自动化${config.calendarRemindersEnabled === false ? "关" : "开"}`;
+  const nextSignature = JSON.stringify([item.key, config, state?.ai?.availableModels, state?.ai?.contextTokenOptions, state?.ai?.permissionModeOptions]);
   if (!settingsDirty && settingsSignature !== nextSignature) {
     populateModelOptions(config.model);
     populateEffortOptions(config.reasoningEffort);
     populateContextOptions(config.contextTokenLimit);
-    populateWorkModeOptions(config.workingMode);
     populatePermissionOptions(config.permissionMode, item.kind);
     els.agentCalendarRemindersEnabled.checked = config.calendarRemindersEnabled !== false;
     settingsSignature = nextSignature;
   }
   updateParameterExplanation(item);
   const busy = Boolean(data.busy || data.activeReply?.running);
-  const readOnlyMode = ["plan", "ask"].includes(els.agentWorkingMode.value);
-  for (const control of [els.agentModel, els.agentReasoningEffort, els.agentContextTokenLimit, els.agentWorkingMode]) control.disabled = busy;
+  for (const control of [els.agentModel, els.agentReasoningEffort, els.agentContextTokenLimit]) control.disabled = busy;
   els.agentPermissionMode.disabled = busy;
   els.agentCalendarRemindersEnabled.disabled = busy;
   els.saveAgentSettingsButton.disabled = busy || !settingsDirty;
   els.agentSettingsHint.textContent = busy
     ? "WorkBuddy 正在处理本轮消息，结束后即可修改；未保存的选择会保留。"
-    : readOnlyMode
-      ? "Plan / Ask 当前轮始终只读；仍可修改并保存执行权限，切回 Agent 后按所选权限生效。"
-      : item.kind === "group" && els.agentPermissionMode.value === "dangerFullAccess"
+    : item.kind === "group" && els.agentPermissionMode.value === "dangerFullAccess"
         ? `保存后从下一轮起生效；当前群的所有成员都能通过${agentName()}操作本机和发送本机文件。`
         : "保存后从下一轮起生效；历史 thread 不变。本轮身份规则仍可继续收窄权限。";
 }
@@ -513,12 +509,6 @@ function populateContextOptions(selectedLimit) {
   els.agentContextTokenLimit.value = String(selected || options[0]?.value || "");
 }
 
-function populateWorkModeOptions(selectedMode) {
-  const options = [...(state?.ai?.workModeOptions || [])];
-  els.agentWorkingMode.innerHTML = options.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
-  els.agentWorkingMode.value = selectedMode || options[0]?.value || "agent";
-}
-
 function populatePermissionOptions(selectedPermission, targetType) {
   const options = (state?.ai?.permissionModeOptions || []).filter((item) => (item.targetTypes || []).includes(targetType));
   els.agentPermissionMode.innerHTML = options.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
@@ -531,7 +521,6 @@ function updateParameterExplanation(item) {
   const model = modelInfo(els.agentModel.value);
   const effort = model?.supportedReasoningEfforts?.find((entry) => entry.reasoningEffort === els.agentReasoningEffort.value);
   const context = (state?.ai?.contextTokenOptions || []).find((entry) => String(entry.value) === els.agentContextTokenLimit.value);
-  const mode = (state?.ai?.workModeOptions || []).find((entry) => entry.value === els.agentWorkingMode.value);
   const permission = (state?.ai?.permissionModeOptions || []).find((entry) => entry.value === els.agentPermissionMode.value);
   const capabilityNote = model?.reasoningCapabilitySource === "workbuddy-cli-global"
     ? "WorkBuddy 当前只公开全局 6 档，未提供逐模型能力矩阵；不支持的档位会由模型忽略。"
@@ -540,7 +529,6 @@ function updateParameterExplanation(item) {
     ? `；高风险：群内任何成员触发${agentName()}后都可读取、修改本机文件并发送本机文件到本群，通知源仍保持只读`
     : "";
   els.agentModeExplanation.innerHTML = [
-    `<p><strong>${escapeHtml(mode?.label || "工作模式")}</strong>${escapeHtml(mode?.description || "")}</p>`,
     `<p><strong>${escapeHtml(permission?.label || "执行权限")}</strong>${escapeHtml(permission?.description || "")}${escapeHtml(permissionWarning)}</p>`,
     `<p><strong>${escapeHtml(effortLabel(els.agentReasoningEffort.value))} · ${escapeHtml(formatTokenLimit(els.agentContextTokenLimit.value))}</strong>${escapeHtml([effort?.description, context?.description, capabilityNote].filter(Boolean).join("；"))}</p>`,
     `<p><strong>通知自动化${els.agentCalendarRemindersEnabled.checked ? "已开启" : "已关闭"}</strong>${els.agentCalendarRemindersEnabled.checked ? "AUTO 通知可写入指定日历和“待办”提醒列表；写入成功后会在 QQ 回复中确认。" : "AUTO 通知仍会整理并回复，但网关不会执行日历或提醒事项写入。"}</p>`
@@ -1035,7 +1023,6 @@ els.agentModel.addEventListener("change", () => {
 });
 els.agentReasoningEffort.addEventListener("change", markSettingsDirty);
 els.agentContextTokenLimit.addEventListener("change", markSettingsDirty);
-els.agentWorkingMode.addEventListener("change", markSettingsDirty);
 els.agentPermissionMode.addEventListener("change", markSettingsDirty);
 els.agentCalendarRemindersEnabled.addEventListener("change", () => {
   updateParameterExplanation(currentTarget());
@@ -1061,7 +1048,6 @@ els.agentSettingsForm.addEventListener("submit", async (event) => {
         model: els.agentModel.value,
         reasoningEffort: els.agentReasoningEffort.value,
         contextTokenLimit: els.agentContextTokenLimit.value === "auto" ? "auto" : Number(els.agentContextTokenLimit.value),
-        workingMode: els.agentWorkingMode.value,
         permissionMode: els.agentPermissionMode.value,
         calendarRemindersEnabled: els.agentCalendarRemindersEnabled.checked
       })
@@ -1401,10 +1387,6 @@ function formatTokenLimit(value) {
   if (!tokens) return "默认";
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 ? 1 : 0)}M`;
   return `${Math.round(tokens / 1000)}K`;
-}
-
-function workModeLabel(value) {
-  return ({ agent: "Agent", plan: "Plan", ask: "Ask" })[value] || "Agent";
 }
 
 function permissionModeLabel(value) {

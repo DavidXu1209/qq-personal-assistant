@@ -435,7 +435,7 @@ test("scheduled MCP Qzone turn keeps its configured Agent permission without sen
 
 test("a whole multi-batch QQ Space scan holds its conversation while incoming chat waits", async (t) => {
   const fixture = await createStoreFixture(t, ["123"]);
-  await fixture.store.setCodexConfig("123", { workingMode: "ask", permissionMode: "readOnly" });
+  await fixture.store.setCodexConfig("123", { workingMode: "agent", permissionMode: "readOnly" });
   let startFirst;
   let finishFirst;
   const firstStarted = new Promise((resolve) => { startFirst = resolve; });
@@ -595,7 +595,7 @@ test("a chat already waiting for sticker admission keeps its place before Space 
 
 test("a failed QQ Space scan releases the queued group conversation", async (t) => {
   const fixture = await createStoreFixture(t, ["123"]);
-  await fixture.store.setCodexConfig("123", { workingMode: "ask", permissionMode: "readOnly" });
+  await fixture.store.setCodexConfig("123", { workingMode: "agent", permissionMode: "readOnly" });
   const codex = new FakeCodex({ replyText: "收到。" });
   const worker = createWorker({
     store: fixture.store, codex,
@@ -651,7 +651,7 @@ test("a hidden instruction refresh can persist the latest bootstrap revision", a
   assert.equal(state.bootstrapRevision, THREAD_INSTRUCTIONS_REVISION);
 });
 
-test("a silent group instruction refresh reuses the thread and verifies the reaction catalog", async (t) => {
+test("a silent group instruction refresh reuses the thread without embedding the reaction catalog", async (t) => {
   const stickerId = "st_abcdef123456";
   const fixture = await createStoreFixture(t, ["123"]);
   await fixture.store.setThread("123", "thread-persistent", {
@@ -659,7 +659,7 @@ test("a silent group instruction refresh reuses the thread and verifies the reac
     bootstrapRevision: THREAD_INSTRUCTIONS_REVISION - 1
   });
   await fixture.store.appendMessage(message("123", "refresh-pending", "刷新期间保留我"));
-  const codex = new FakeCodex({ replyText: `CONTEXT_READY ${stickerId}` });
+  const codex = new FakeCodex({ replyText: "CONTEXT_READY" });
   const worker = createWorker({
     store: fixture.store,
     codex,
@@ -681,8 +681,8 @@ test("a silent group instruction refresh reuses the thread and verifies the reac
   assert.equal(state.bootstrapRevision, THREAD_INSTRUCTIONS_REVISION);
   assert.match(codex.lastRun.prompt, /本持久会话固定说明（人工无声刷新）/);
   assert.match(codex.lastRun.prompt, /qq_gateway\.list_reactions/);
-  assert.match(codex.lastRun.prompt, new RegExp(`CONTEXT_READY ${stickerId}`));
-  assert.match(codex.lastRun.prompt, new RegExp(`${stickerId}=适合觉得好笑时使用`));
+  assert.match(codex.lastRun.prompt, /只回复 CONTEXT_READY/);
+  assert.doesNotMatch(codex.lastRun.prompt, new RegExp(stickerId));
 });
 
 test("Codex app-server client starts persistent threads, resumes them, and streams deltas", async (t) => {
@@ -918,7 +918,7 @@ test("per-conversation Codex settings persist independently", async (t) => {
   assert.deepEqual(second.snapshot("456").codexConfig, defaults);
 });
 
-test("WorkBuddy session modes and automatic compaction persist without changing the thread", async (t) => {
+test("legacy work modes normalize to Agent while automatic compaction keeps the thread", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "crc-workbuddy-config-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const store = new SessionStore({
@@ -945,7 +945,7 @@ test("WorkBuddy session modes and automatic compaction persist without changing 
   const saved = store.snapshot("123");
   assert.equal(saved.threadId, "same-thread");
   assert.equal(saved.codexConfig.contextTokenLimit, "auto");
-  assert.equal(saved.codexConfig.workingMode, "ask");
+  assert.equal(saved.codexConfig.workingMode, "agent");
   assert.equal(saved.codexConfig.permissionMode, "workspaceWrite");
   assert.equal(saved.codexConfig.calendarRemindersEnabled, false);
 });
@@ -2128,8 +2128,8 @@ test("prompt carries identity labels and group members receive a risk-scoped Age
     { workingMode: "agent", permissionMode: "dangerFullAccess" }
   );
   assert.deepEqual(subscriptionStillReadOnly.turnSandbox, { type: "readOnly" });
-  const askCapped = constrainConversationSecurity(ownerSecurity, { workingMode: "ask", permissionMode: "dangerFullAccess" });
-  assert.deepEqual(askCapped.turnSandbox, { type: "readOnly" });
+  const legacyModeIgnored = constrainConversationSecurity(ownerSecurity, { workingMode: "ask", permissionMode: "dangerFullAccess" });
+  assert.deepEqual(legacyModeIgnored.turnSandbox, { type: "dangerFullAccess" });
 });
 
 test("five-minute check fires only for new pending messages and does not repeat old ones", async (t) => {

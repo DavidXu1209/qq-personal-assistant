@@ -112,12 +112,9 @@
               <label for="agentContextTokenLimit">自动压缩阈值
                 <select id="agentContextTokenLimit" required></select>
               </label>
-              <label for="agentWorkingMode">工作模式
-                <select id="agentWorkingMode" required></select>
-              </label>
               <label for="agentPermissionMode">执行权限（独立设置）
                 <select id="agentPermissionMode" required></select>
-                <small class="field-note">与工作模式分开保存；Agent 模式按此权限执行，Plan / Ask 仍强制只读。</small>
+                <small class="field-note">所有会话固定使用 Agent；这里决定可读取和修改的本机范围。</small>
               </label>
               <label class="settings-switch" for="agentCalendarRemindersEnabled">
                 <span><strong>通知自动化权限</strong><small>允许这个会话把通知写入“学习 / 社团 / 活动”日历和“待办”提醒列表</small></span>

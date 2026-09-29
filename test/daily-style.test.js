@@ -55,7 +55,7 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   assert.deepEqual(published, ["短句直接，不爱用逗号"]);
   assert.deepEqual(calls.map(([kind]) => kind), ["start", "turn", "delete"]);
   assert.equal(calls[0][1].ephemeral, true);
-  assert.equal(calls[1][1].workingMode, "ask");
+  assert.equal(calls[1][1].workingMode, "agent");
   assert.equal(calls[1][1].prefetchQqMessages, false);
   assert.match(calls[1][1].prompt, /上一版：说话比较直接/);
   assert.match(calls[1][1].prompt, /完整替换版，不追加旧规则/);

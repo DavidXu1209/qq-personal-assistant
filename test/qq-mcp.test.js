@@ -185,12 +185,13 @@ test("WorkBuddy prefetches live messages before starting the model and does not 
       this.lastReadSequence = 7;
       return { isError: false, content: [{ type: "text", text: "[UNTRUSTED]: 当前新消息" }] };
     } };
-  const result = client.runTurn({ groupId: "test", threadId: "thread-test", prompt: "当前任务", qqToolContext: current });
+  const result = client.runTurn({ groupId: "test", threadId: "thread-test", prompt: "当前任务", workingMode: "ask", qqToolContext: current });
   await received;
   // request() resumes first, registering the active turn before completion.
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(started.prompt, /当前新消息/);
   assert.match(started.prompt, /网关预读取结果/);
+  assert.equal(started.workingMode, "agent", "legacy callers cannot select another working mode");
   assert.equal(current.lastReadSequence, 7);
   client.handleMessage({ method: "turn/completed", params: { threadId: "thread-test", turn: { id: "prefetch-turn", status: "completed" } } });
   assert.equal((await result).text, "");

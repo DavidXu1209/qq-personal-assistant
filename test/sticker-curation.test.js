@@ -126,7 +126,7 @@ test("temporary selector visually reviews every batch, uses the label model, and
   let starts = 0;
   let deletes = 0;
   const codex = {
-    async startThread(options) { assert.equal(starts, deletes, "the previous image context must be gone before opening another batch"); starts++; assert.equal(options.model, "chosen-vision-model"); assert.equal(options.ephemeral, true); assert.equal(options.workingMode, "ask"); return options.threadId; },
+    async startThread(options) { assert.equal(starts, deletes, "the previous image context must be gone before opening another batch"); starts++; assert.equal(options.model, "chosen-vision-model"); assert.equal(options.ephemeral, true); assert.equal(options.workingMode, "agent"); return options.threadId; },
     async runTurn(options) {
       requests.push(options);
       assert.match(options.threadId, /^sticker-prune-/);

@@ -1,7 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
-  appendStickerCatalog,
   baseThreadInstructions,
   buildMcpTurnPrompt,
   buildTurnPrompt,
@@ -200,7 +199,7 @@ export class GroupWorker {
     const workspaceDir = this.workspaceDirFor(groupId);
     if (workspaceDir) await mkdir(workspaceDir, { recursive: true });
     const options = optionsForConversation(group);
-    const scheduledSandbox = qqToolContext && this.codex?.supportsQqMcp && options.workingMode === "agent"
+    const scheduledSandbox = qqToolContext && this.codex?.supportsQqMcp
       ? options.permissionMode
       : "readOnly";
     let threadId = group.threadId;
@@ -288,18 +287,13 @@ export class GroupWorker {
         workingMode: "agent",
         threadSandbox: "read-only"
       });
-      const stickerCatalog = this.stickerManager?.promptCatalog() || [];
-      const expectedStickerId = String(stickerCatalog.find((item) => /^st_[a-f0-9]{12,64}$/.test(String(item?.id || "")))?.id || "");
       const promptLines = [
         "本持久会话固定说明（人工无声刷新）：",
         baseThreadInstructions(),
         "",
         "以上固定说明是当前最新版本，替代旧版本。只读取说明；以后仅使用 qq_gateway.list_reactions 或网关随当前轮提供的真实表情 ID，不发送 QQ 内容，也不要执行其他外部操作。",
       ];
-      appendStickerCatalog(promptLines, stickerCatalog);
-      promptLines.push(expectedStickerId
-        ? `成功加载后只回复 CONTEXT_READY ${expectedStickerId}；调用失败只回复 CONTEXT_MISSING。`
-        : "成功加载后只回复 CONTEXT_READY；调用失败只回复 CONTEXT_MISSING。");
+      promptLines.push("成功加载后只回复 CONTEXT_READY；调用失败只回复 CONTEXT_MISSING。");
       const prompt = promptLines.join("\n");
       let result = null;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -320,9 +314,6 @@ export class GroupWorker {
       if (result?.compacted) throw new Error("Context compacted twice while refreshing fixed instructions");
       if (!/\bCONTEXT_READY\b/.test(String(result?.text || ""))) {
         throw new Error(`Instruction refresh verification failed: ${String(result?.text || "empty reply").slice(0, 200)}`);
-      }
-      if (expectedStickerId && !String(result?.text || "").includes(expectedStickerId)) {
-        throw new Error(`Reaction catalog verification failed: expected ${expectedStickerId}`);
       }
       await this.store.markBootstrapComplete(groupId, THREAD_INSTRUCTIONS_REVISION);
       this.setLive(groupId, { status: "idle", threadId: group.threadId, trigger: null, text: "", error: null });
@@ -424,9 +415,7 @@ export class GroupWorker {
     if (workspaceDir) await mkdir(workspaceDir, { recursive: true });
     const codexOptions = optionsForConversation(group);
     const sourceViaMcp = autoSubscriptionTurn && this.codex.supportsQqMcp === true;
-    // Ask mode hides MCP tools in WorkBuddy. Keep the configured sandbox read-only,
-    // but expose the one scoped source-read tool for AUTO turns.
-    const turnOptions = sourceViaMcp ? { ...codexOptions, workingMode: "agent" } : codexOptions;
+    const turnOptions = codexOptions;
     const security = constrainConversationSecurity(
       sandboxForTrigger(work.trigger, { workspaceDir }),
       codexOptions
@@ -449,8 +438,8 @@ export class GroupWorker {
 
     const includeBaseInstructions = !group.bootstrapComplete
       || group.bootstrapRevision !== THREAD_INSTRUCTIONS_REVISION;
-    const useMcpRead = !autoSubscriptionTurn && codexOptions.workingMode === "agent"
-      && security.turnSandbox?.type !== "readOnly" && this.codex.supportsQqMcp === true;
+    // Read-only limits local filesystem access, not the gateway's scoped QQ MCP.
+    const useMcpRead = !autoSubscriptionTurn && this.codex.supportsQqMcp === true;
     let prompt = autoSubscriptionTurn
       ? buildAutoSubscriptionPrompt(inputContexts, {
           targetType: "group",
@@ -466,7 +455,7 @@ export class GroupWorker {
           includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt && !useMcpRead,
           trigger: work.trigger,
           security,
-          stickerCatalog: useMcpRead ? [] : (this.stickerManager?.promptCatalog() || [])
+          stickerCatalog: this.codex.supportsQqMcp ? [] : (this.stickerManager?.promptCatalog() || [])
         });
     const extraReadSections = [];
     if (!autoSubscriptionTurn && this.qzone) {
@@ -528,7 +517,7 @@ export class GroupWorker {
           ? [`【此前已送达 QQ、尚未清理的最近动作】${snapshot.liveSession.actions.slice(-8).map((item) => `${item.kind}: ${item.summary}`).join("；")}；不要重复发送。`]
           : [])
       ].filter(Boolean).join("\n\n")
-    }) : !autoSubscriptionTurn && codexOptions.workingMode === "agent" ? {
+    }) : !autoSubscriptionTurn ? {
       targetType: "group",
       allowMessage: true,
       allowReactions: true,
@@ -1014,7 +1003,7 @@ function optionsForConversation(conversation) {
     model: conversation.codexConfig?.model || undefined,
     effort: conversation.codexConfig?.reasoningEffort || undefined,
     contextTokenLimit: conversation.codexConfig?.contextTokenLimit || undefined,
-    workingMode: conversation.codexConfig?.workingMode || "agent",
+    workingMode: "agent",
     permissionMode: conversation.codexConfig?.permissionMode || "workspaceWrite",
     calendarRemindersEnabled: conversation.codexConfig?.calendarRemindersEnabled !== false
   };

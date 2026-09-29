@@ -352,7 +352,13 @@ export class SessionStore {
     const group = this.ensureGroup(groupId);
     if (this.rateLimitUntil(groupId) > this.clock().getTime()) return null;
     if (group.replyEnabled === false || group.busy || !group.pendingTrigger) return null;
-    if (group.pendingMessages.length === 0 && group.pendingTrigger.reason !== "subscription_auto" && !group.failedDelivery) return null;
+    if (group.pendingMessages.length === 0 && group.pendingTrigger.reason !== "subscription_auto" && !group.failedDelivery) {
+      // A stale wake can survive after its messages were cleared. Retire it here;
+      // otherwise the worker re-kicks itself in a microtask forever.
+      group.pendingTrigger = null;
+      await this.save();
+      return null;
+    }
     const trigger = group.pendingTrigger;
     group.replyFollowup = null;
     group.pendingTrigger = null;
@@ -935,9 +941,7 @@ function normalizeCodexConfig(value, fallback = null) {
     contextTokenLimit: rawLimit === "auto"
       ? "auto"
       : (Number.isFinite(configuredLimit) && configuredLimit > 0 ? Math.floor(configuredLimit) : null),
-    workingMode: ["agent", "plan", "ask"].includes(String(source.workingMode || defaults.workingMode || "agent"))
-      ? String(source.workingMode || defaults.workingMode || "agent")
-      : "agent",
+    workingMode: "agent",
     permissionMode: ["readOnly", "workspaceWrite", "dangerFullAccess"].includes(String(source.permissionMode || defaults.permissionMode || "workspaceWrite"))
       ? String(source.permissionMode || defaults.permissionMode || "workspaceWrite")
       : "workspaceWrite",

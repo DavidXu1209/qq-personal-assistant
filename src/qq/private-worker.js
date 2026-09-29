@@ -230,7 +230,7 @@ export class PrivateWorker {
   async performQzoneTurn(userId, prompt, trigger, qqToolContext = null) {
     let conversation = this.store.snapshot(userId);
     const options = optionsForConversation(conversation);
-    const scheduledSandbox = qqToolContext && this.codex?.supportsQqMcp && options.workingMode === "agent"
+    const scheduledSandbox = qqToolContext && this.codex?.supportsQqMcp
       ? options.permissionMode
       : "readOnly";
     let threadId = conversation.threadId;
@@ -326,8 +326,7 @@ export class PrivateWorker {
       let threadId = conversation.threadId;
       const codexOptions = optionsForConversation(conversation);
       const sourceViaMcp = autoSubscriptionTurn && this.codex.supportsQqMcp === true;
-      // Ask mode hides MCP tools in WorkBuddy; AUTO still needs the scoped read.
-      const turnOptions = sourceViaMcp ? { ...codexOptions, workingMode: "agent" } : codexOptions;
+      const turnOptions = codexOptions;
       const security = constrainConversationSecurity(privateSandbox(userId, work.trigger), codexOptions);
       if (!threadId) {
         threadId = await this.codex.startThread({ ...turnOptions, cwd: security.cwd, threadSandbox: security.threadSandbox });
@@ -345,8 +344,8 @@ export class PrivateWorker {
 
       const includeBaseInstructions = !conversation.bootstrapComplete
         || conversation.bootstrapRevision !== THREAD_INSTRUCTIONS_REVISION;
-      const useMcpRead = !autoSubscriptionTurn && codexOptions.workingMode === "agent"
-        && security.turnSandbox?.type !== "readOnly" && this.codex.supportsQqMcp === true;
+      // Read-only limits local filesystem access, not the gateway's scoped QQ MCP.
+      const useMcpRead = !autoSubscriptionTurn && this.codex.supportsQqMcp === true;
       let prompt = autoSubscriptionTurn
         ? buildAutoSubscriptionPrompt(inputContexts, {
             targetType: "private",
@@ -363,7 +362,7 @@ export class PrivateWorker {
           displayName: this.targetNameResolver(userId),
           security,
           includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt && !useMcpRead,
-          stickerCatalog: useMcpRead ? [] : (this.stickerManager?.promptCatalog() || [])
+          stickerCatalog: this.codex.supportsQqMcp ? [] : (this.stickerManager?.promptCatalog() || [])
         });
       const extraReadSections = [];
       if (!autoSubscriptionTurn && this.qzone) {
@@ -418,7 +417,7 @@ export class PrivateWorker {
             ? [`【此前已送达 QQ、尚未清理的最近动作】${snapshot.liveSession.actions.slice(-8).map((item) => `${item.kind}: ${item.summary}`).join("；")}；不要重复发送。`]
             : [])
         ].filter(Boolean).join("\n\n")
-      }) : !autoSubscriptionTurn && codexOptions.workingMode === "agent" ? {
+      }) : !autoSubscriptionTurn ? {
         targetType: "private", allowMessage: true, allowReactions: true,
         stickers: this.stickerManager?.promptCatalog() || [],
         allowQzonePost: Boolean(this.qzone?.isOwnerPostTurn(work.messages, work.trigger, "private", userId))
@@ -734,7 +733,7 @@ function optionsForConversation(conversation) {
     model: conversation.codexConfig?.model || undefined,
     effort: conversation.codexConfig?.reasoningEffort || undefined,
     contextTokenLimit: conversation.codexConfig?.contextTokenLimit || undefined,
-    workingMode: conversation.codexConfig?.workingMode || "agent",
+    workingMode: "agent",
     permissionMode: conversation.codexConfig?.permissionMode || "workspaceWrite",
     calendarRemindersEnabled: conversation.codexConfig?.calendarRemindersEnabled !== false
   };

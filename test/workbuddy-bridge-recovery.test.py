@@ -117,13 +117,14 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         normal_options = factory.call_args_list[0].kwargs["options"]
         normal_server = normal_options.mcp_servers["qq_gateway"]
         self.assertEqual(normal_options.effort, "low")
-        self.assertIsNone(normal_options.tools)
-        self.assertEqual(normal_options.disallowed_tools, ["EnterPlanMode", "ExitPlanMode"])
+        self.assertEqual(normal_options.permission_mode, "dontAsk")
+        self.assertEqual(normal_options.tools, BRIDGE_MODULE.READ_ONLY_TOOLS)
+        self.assertEqual(normal_options.disallowed_tools, [])
         self.assertFalse(normal_server["defer_loading"])
         self.assertEqual(normal_server["tools"], {})
         source_options = factory.call_args_list[1].kwargs["options"]
         self.assertEqual(source_options.tools, ["ToolSearch", "DeferExecuteTool"])
-        self.assertEqual(source_options.disallowed_tools, ["EnterPlanMode", "ExitPlanMode"])
+        self.assertEqual(source_options.disallowed_tools, [])
         self.assertEqual(source_options.permission_mode, "default")
         source_server = source_options.mcp_servers["qq_gateway"]
         self.assertFalse(source_server["defer_loading"])
@@ -172,23 +173,63 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.client)
         self.assertTrue(client.disconnected)
 
-    async def test_headless_agent_blocks_new_plan_but_can_exit_legacy_plan_with_scoped_permission(self) -> None:
-        from codebuddy_agent_sdk import PermissionResultAllow
+    async def test_headless_gateway_is_always_agent_and_never_advertises_plan_transitions(self) -> None:
+        from codebuddy_agent_sdk import PermissionResultDeny
         bridge = BRIDGE_MODULE.Bridge()
-        session = BRIDGE_MODULE.Session("thread-legacy-plan", "/tmp")
+        session = BRIDGE_MODULE.Session("thread-agent-only", "/tmp")
         session.permission_mode = "acceptEdits"
         fake = FakeClient()
         fake.connect = AsyncMock()
         with patch("codebuddy_agent_sdk.CodeBuddySDKClient", return_value=fake) as factory:
             await bridge._make_client(session)
         options = factory.call_args.kwargs["options"]
-        self.assertEqual(options.disallowed_tools, ["EnterPlanMode"])
-        self.assertEqual(options.extra_args["permission-mode-before-plan"], "acceptEdits")
-        self.assertIsInstance(await options.can_use_tool("ExitPlanMode", {}, None), PermissionResultAllow)
-
-        session.working_mode = "plan"
-        self.assertEqual(BRIDGE_MODULE.can_exit_plan_mode(session), False)
+        self.assertEqual(options.disallowed_tools, [])
+        self.assertIsInstance(await options.can_use_tool("ExitPlanMode", {}, None), PermissionResultDeny)
         self.assertNotIn("permission-mode-before-plan", BRIDGE_MODULE.session_extra_args(session))
+        self.assertEqual(BRIDGE_MODULE.normalize_working_mode("plan"), "agent")
+        self.assertEqual(BRIDGE_MODULE.normalize_working_mode("ask"), "agent")
+        self.assertEqual(BRIDGE_MODULE.SANDBOX_TO_PERMISSION["readOnly"], "dontAsk")
+
+    async def test_legacy_plan_transcript_is_forked_and_repaired_without_qq_tools(self) -> None:
+        from codebuddy_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-legacy-plan", "/tmp")
+        session.sdk_session_id = "sdk-plan-old"
+        session.permission_mode = "dontAsk"
+        fake = FakeClient()
+        fake.connect = AsyncMock()
+        fake.query = AsyncMock()
+
+        async def responses():
+            yield ResultMessage(subtype="success", duration_ms=0, duration_api_ms=0,
+                is_error=False, num_turns=1, session_id="sdk-agent-new", result="")
+
+        fake.receive_response = responses
+        with patch("codebuddy_agent_sdk.CodeBuddySDKClient", return_value=fake) as factory, \
+                patch.object(bridge, "_remember_session_id") as remember:
+            await bridge._migrate_legacy_plan_session(session)
+
+        options = factory.call_args.kwargs["options"]
+        self.assertTrue(options.fork_session)
+        self.assertEqual(options.resume, "sdk-plan-old")
+        self.assertEqual(options.permission_mode, "default")
+        self.assertEqual(options.tools, ["ExitPlanMode"])
+        self.assertEqual(options.mcp_servers, {})
+        self.assertEqual(options.extra_args["permission-mode-before-plan"], "dontAsk")
+        self.assertIsInstance(await options.can_use_tool("ExitPlanMode", {}, None), PermissionResultAllow)
+        self.assertIsInstance(await options.can_use_tool("Bash", {}, None), PermissionResultDeny)
+        self.assertEqual(session.sdk_session_id, "sdk-agent-new")
+        self.assertIsNone(session.client)
+        remember.assert_called_once_with("thread-legacy-plan", "sdk-agent-new")
+        self.assertTrue(fake.disconnected)
+
+    def test_only_exact_missing_exit_plan_errors_trigger_legacy_migration(self) -> None:
+        self.assertTrue(BRIDGE_MODULE.Bridge._is_legacy_plan_mode_error(
+            RuntimeError("Tool ExitPlanMode not found in agent cli.")))
+        self.assertTrue(BRIDGE_MODULE.Bridge._is_legacy_plan_mode_error(
+            RuntimeError('Tool "ExitPlanMode" does not exist in the current tool set.')))
+        self.assertFalse(BRIDGE_MODULE.Bridge._is_legacy_plan_mode_error(
+            RuntimeError("ExitPlanMode permission denied")))
 
     async def test_release_before_completion_does_not_remove_the_next_turn(self) -> None:
         bridge = BRIDGE_MODULE.Bridge()

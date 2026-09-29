@@ -120,11 +120,6 @@ const contextTokenOptions = engineKind === "workbuddy"
       { value: 200_000, label: "平衡 · 200K", description: "保留更多近期细节，当前默认" },
       { value: 400_000, label: "充足 · 400K", description: "更长历史，单轮处理可能更慢" }
     ];
-const workModeOptions = [
-  { value: "agent", label: "Agent · 直接完成", description: "直接执行任务；实际能力仍受下方权限和本轮发送者身份限制" },
-  { value: "plan", label: "Plan · 先给方案", description: "只分析并给出实施方案，不自动执行；确认后切回 Agent 再做" },
-  { value: "ask", label: "Ask · 只问不动", description: "只回答、读取和分析；禁用写入与命令执行" }
-];
 const permissionModeOptions = [
   { value: "readOnly", label: "只读分析", description: "可读取和分析，不修改文件或外部状态", targetTypes: ["group", "private"] },
   { value: "workspaceWrite", label: "工作区写入", description: "可在当前目标工作区内创建、修改和运行文件", targetTypes: ["group", "private"] },
@@ -1035,7 +1030,6 @@ function publicState() {
       autoCompactTokenScope: codexAutoCompactTokenScope,
       availableModels: codexModels,
       contextTokenOptions,
-      workModeOptions,
       permissionModeOptions
     },
     channels: { qq: true },
@@ -1217,10 +1211,7 @@ function validateCodexConfig(value, { targetType = "group" } = {}) {
   if (!contextTokenOptions.some((item) => String(item.value) === String(contextTokenLimit))) {
     throw new HttpError(400, "请选择可用的上下文量");
   }
-  const workingMode = String(value?.workingMode || "agent");
-  if (!workModeOptions.some((item) => item.value === workingMode)) {
-    throw new HttpError(400, "请选择可用的工作模式");
-  }
+  const workingMode = "agent";
   const permissionMode = String(value?.permissionMode || "workspaceWrite");
   const permission = permissionModeOptions.find((item) => item.value === permissionMode);
   if (!permission || !permission.targetTypes.includes(targetType)) {
@@ -1244,11 +1235,11 @@ async function migrateWorkBuddyConversationConfigs(targetStore) {
   for (const conversation of targetStore.listGroups()) {
     const current = conversation.codexConfig || defaultCodexConfig;
     const normalizedLimit = normalizeWorkBuddyContextLimit(current.contextTokenLimit);
-    if (normalizedLimit === current.contextTokenLimit && current.workingMode && current.permissionMode) continue;
+    if (normalizedLimit === current.contextTokenLimit && current.workingMode === "agent" && current.permissionMode) continue;
     await targetStore.setCodexConfig(conversation.groupId, {
       ...current,
       contextTokenLimit: normalizedLimit,
-      workingMode: current.workingMode || "agent",
+      workingMode: "agent",
       permissionMode: current.permissionMode || "workspaceWrite"
     });
   }
@@ -1272,7 +1263,7 @@ function reservationTarget(targetType, conversation) {
     model: config.model || codexModel,
     effort: config.reasoningEffort || codexEffort,
     contextTokenLimit: config.contextTokenLimit || codexAutoCompactTokenLimit || 200_000,
-    workingMode: config.workingMode || "agent",
+    workingMode: "agent",
     cwd: targetType === "group"
       ? join(groupWorkspaceRoot, String(conversation.groupId))
       : projectDir

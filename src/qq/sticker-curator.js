@@ -63,7 +63,7 @@ export class EphemeralStickerCurator {
     const jobId = randomUUID();
     const cwd = join(this.workspaceRoot, jobId);
     const model = String(this.getSettings()?.model || "hy3");
-    const options = { model, effort: "auto", contextTokenLimit: "auto", workingMode: "ask", cwd };
+    const options = { model, effort: "auto", contextTokenLimit: "auto", workingMode: "agent", cwd };
     let threadId;
     let selected;
     let failure;
