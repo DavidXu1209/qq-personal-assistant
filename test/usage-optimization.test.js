@@ -265,26 +265,45 @@ test("WorkBuddy compaction notification marks the active turn for instruction re
   assert.equal(client.activeByGroup.size, 0);
 });
 
-test("WorkBuddy uses a separate bounded watchdog while its context is compacting", () => {
+test("WorkBuddy context compaction has a separate absolute deadline", () => {
   const client = new WorkBuddyClient({ idleTimeoutMs: 50, compactionTimeoutMs: 400, timeoutMs: 1000 });
   const active = {
     threadId: "thread", turnId: "turn", groupId: "group", text: "", compacted: false, compacting: false,
-    resolve: () => {}, reject: () => {}, timeout: null, progressTimeout: null
+    compactionDeadlineAt: null, resolve: () => {}, reject: () => {}, timeout: null, progressTimeout: null
   };
   client.activeByThread.set("thread", active);
   client.activeByTurn.set("turn", active);
   client.activeByGroup.set("group", active);
-
-  client.handleMessage({ method: "thread/compacting", params: { threadId: "other" } });
-  assert.equal(active.compacting, false, "another thread cannot extend this turn");
-  client.handleMessage({ method: "thread/compacting", params: { threadId: "thread", trigger: "auto" } });
-  assert.equal(active.compacting, true);
-  assert.equal(active.progressTimeout._idleTimeout, 400);
-  client.handleMessage({ method: "thread/compacted", params: { threadId: "thread", trigger: "auto" } });
-  assert.equal(active.compacting, false);
-  assert.equal(active.compacted, true);
-  assert.equal(active.progressTimeout._idleTimeout, 50);
-  client.finishTurn(active);
+  const realNow = Date.now;
+  let now = 1000;
+  Date.now = () => now;
+  try {
+    client.handleMessage({ method: "thread/compacting", params: { threadId: "other" } });
+    assert.equal(active.compacting, false, "another thread cannot extend this turn");
+    client.handleMessage({ method: "thread/compacting", params: { threadId: "thread", trigger: "auto" } });
+    assert.equal(active.compacting, true);
+    assert.equal(active.compactionDeadlineAt, 1400);
+    assert.equal(active.progressTimeout._idleTimeout, 400);
+    now = 1100;
+    client.handleMessage({ method: "thread/compacting", params: { threadId: "thread", trigger: "auto" } });
+    assert.equal(active.compactionDeadlineAt, 1400, "repeated compacting notices cannot restart the absolute deadline");
+    assert.equal(active.progressTimeout._idleTimeout, 300);
+    client.handleMessage({ method: "turn/progress", params: { threadId: "thread", turnId: "turn", stage: "tool" } });
+    assert.equal(active.compactionDeadlineAt, 1400, "progress cannot extend the compaction deadline");
+    assert.equal(active.progressTimeout._idleTimeout, 300);
+    now = 1200;
+    client.handleMessage({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", delta: "压缩中" } });
+    assert.equal(active.compactionDeadlineAt, 1400, "text cannot extend the compaction deadline");
+    assert.equal(active.progressTimeout._idleTimeout, 200);
+    client.handleMessage({ method: "thread/compacted", params: { threadId: "thread", trigger: "auto" } });
+    assert.equal(active.compacting, false);
+    assert.equal(active.compactionDeadlineAt, null);
+    assert.equal(active.compacted, true);
+    assert.equal(active.progressTimeout._idleTimeout, 50);
+  } finally {
+    Date.now = realNow;
+    client.finishTurn(active);
+  }
 });
 
 test("Codex terminal errors retain their detail and ignore another turn's errors", () => {

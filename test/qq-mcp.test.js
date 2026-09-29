@@ -229,54 +229,37 @@ test("WorkBuddy timeout keeps the local writer until bridge interruption is ackn
   assert.equal(client.activeByGroup.has(active.groupId), false);
 });
 
-test("WorkBuddy progress notices do not keep a silent turn alive", async () => {
-  const client = new WorkBuddyClient({ idleTimeoutMs: 100, timeoutMs: 1000 });
+test("WorkBuddy genuine progress keeps a long-running turn alive without a total-duration timer", async () => {
+  const client = new WorkBuddyClient({ idleTimeoutMs: 1000, timeoutMs: 10_000 });
   client.ensureProcess = async () => {};
   let interrupts = 0;
   client.request = async (method) => {
-    if (method === "turn/start") return { turn: { id: "silent-turn" } };
+    if (method === "turn/start") return { turn: { id: "active-turn" } };
     assert.equal(method, "turn/interrupt");
     interrupts++;
     return { ok: true };
   };
-  const running = client.runTurn({ groupId: "silent-group", threadId: "silent-thread", prompt: "test", prefetchQqMessages: false });
+  const running = client.runTurn({ groupId: "active-group", threadId: "active-thread", prompt: "test", prefetchQqMessages: false });
   const rejected = assert.rejects(running, /长时间无进展.*待处理消息仍保留/);
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  client.handleMessage({ method: "turn/progress", params: { threadId: "silent-thread", turnId: "silent-turn", stage: "response" } });
-  await new Promise((resolve) => setTimeout(resolve, 75));
+  await new Promise((resolve) => setImmediate(resolve));
+  const active = client.activeByTurn.get("active-turn");
+  assert.ok(active);
+  assert.equal(active.timeout, null, "there is no absolute whole-turn timeout");
+  const initialWatchdog = active.progressTimeout;
+  client.handleMessage({ method: "turn/progress", params: { threadId: "other-thread", turnId: "active-turn", stage: "tool" } });
+  assert.equal(active.progressTimeout, initialWatchdog, "another thread cannot refresh the watchdog");
+  client.handleMessage({ method: "turn/progress", params: { threadId: "active-thread", turnId: "active-turn", stage: "tool" } });
+  const progressWatchdog = active.progressTimeout;
+  assert.notEqual(progressWatchdog, initialWatchdog, "reasoning and tool progress refresh the watchdog");
+  client.handleMessage({ method: "item/agentMessage/delta", params: {
+    threadId: "active-thread", turnId: "active-turn", delta: "还在处理"
+  } });
+  assert.notEqual(active.progressTimeout, progressWatchdog, "generated text also refreshes the watchdog");
+  assert.equal(interrupts, 0);
+  await client.timeoutTurn(active, "WorkBuddy 长时间无进展；已中断本轮，待处理消息仍保留");
   await rejected;
   assert.equal(interrupts, 1);
   assert.equal(client.activeByGroup.size, 0);
-});
-
-test("WorkBuddy output deltas keep a long-running turn alive until output becomes silent", async () => {
-  const client = new WorkBuddyClient({ idleTimeoutMs: 100, timeoutMs: 1000 });
-  client.ensureProcess = async () => {};
-  let interrupts = 0;
-  client.request = async (method) => {
-    if (method === "turn/start") return { turn: { id: "streaming-turn" } };
-    assert.equal(method, "turn/interrupt");
-    interrupts++;
-    return { ok: true };
-  };
-  const running = client.runTurn({ groupId: "streaming-group", threadId: "streaming-thread", prompt: "test", prefetchQqMessages: false });
-  const rejected = assert.rejects(running, /长时间无进展.*待处理消息仍保留/);
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  client.handleMessage({ method: "item/agentMessage/delta", params: {
-    threadId: "streaming-thread", turnId: "streaming-turn", delta: "还在"
-  } });
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  client.handleMessage({ method: "item/agentMessage/delta", params: {
-    threadId: "streaming-thread", turnId: "streaming-turn", delta: "输出"
-  } });
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(client.activeByGroup.has("streaming-group"), true);
-  assert.equal(interrupts, 0);
-  // The production watchdog is intentionally unref'ed. Keep this test's event
-  // loop alive long enough for the expected silent interval to expire.
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  await rejected;
-  assert.equal(interrupts, 1);
 });
 
 test("WorkBuddy loopback MCP requires its private token and returns queued actions to the existing delivery parser", async () => {
