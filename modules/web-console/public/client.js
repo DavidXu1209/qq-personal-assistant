@@ -9,7 +9,7 @@ const els = Object.fromEntries([
   "agentSettingsDetails", "agentSettingsSummary", "agentSettingsForm", "agentModel", "agentReasoningEffort",
   "agentContextTokenLimit", "agentWorkingMode", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
   "agentSettingsHint", "agentSettingsStatus", "saveAgentSettingsButton",
-  "personaDetails", "personaSummary", "personaForm", "personaGlobalRules", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview", "personaStatus", "savePersonaButton",
+  "personaDetails", "personaSummary", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview",
   "stickerLabelDetails", "stickerLabelSummary", "stickerLabelForm", "stickerLabelModel", "stickerLabelStatus", "saveStickerLabelButton",
   "addSubscriptionButton", "subscriptionForm", "subscriptionId", "subscriptionSource", "subscriptionIntake",
   "subscriptionDelayLabel", "subscriptionDelay", "subscriptionEnabled", "cancelSubscriptionButton",
@@ -28,8 +28,6 @@ let conversationSignature = "";
 let navigationSignature = "";
 let settingsSignature = "";
 let settingsDirty = false;
-let personaSignature = "";
-let personaDirty = false;
 let stickerLabelSignature = "";
 let stickerLabelDirty = false;
 let stickerGallerySignature = "";
@@ -405,11 +403,6 @@ function renderPersona(item) {
   const persona = state?.persona || {};
   const publishedStyle = persona.publishedStyle || {};
   els.personaSummary.textContent = "所有会话共用";
-  const nextSignature = JSON.stringify(persona.globalRules || []);
-  if (!personaDirty && personaSignature !== nextSignature) {
-    els.personaGlobalRules.value = (persona.globalRules || []).join("\n");
-    personaSignature = nextSignature;
-  }
   els.personaOwnerStyleSummary.textContent = publishedStyle.summarizedAt
     ? `最近更新 ${formatTime(publishedStyle.summarizedAt)}` : "尚未总结";
   const learnedRules = publishedStyle.rules || [];
@@ -417,14 +410,6 @@ function renderPersona(item) {
     ? learnedRules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join("")
     : "<li>尚无已发布的表达规则。</li>";
   els.personaPromptPreview.textContent = persona.promptPreview || "—";
-  els.savePersonaButton.disabled = !personaDirty;
-}
-
-function markPersonaDirty() {
-  personaDirty = true;
-  els.personaStatus.textContent = "有未保存的调整";
-  els.personaStatus.className = "form-status";
-  renderPersona(currentTarget());
 }
 
 function renderStickerLabelSettings() {
@@ -781,9 +766,6 @@ function selectTarget(key) {
   conversationSignature = "";
   settingsSignature = "";
   settingsDirty = false;
-  personaSignature = "";
-  personaDirty = false;
-  els.personaStatus.textContent = "";
   els.agentSettingsStatus.textContent = "";
   closeSubscriptionForm();
   localStorage.setItem("crc-selected-target", selectedKey);
@@ -1039,32 +1021,6 @@ els.agentSettingsForm.addEventListener("submit", async (event) => {
   } finally {
     els.saveAgentSettingsButton.textContent = "保存会话参数";
     els.saveAgentSettingsButton.disabled = !settingsDirty;
-  }
-});
-els.personaGlobalRules.addEventListener("input", markPersonaDirty);
-els.personaForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const item = currentTarget();
-  if (!item || !personaDirty) return;
-  els.savePersonaButton.disabled = true;
-  els.personaStatus.textContent = "正在保存…";
-  try {
-    const updated = await api("/api/persona/rules", {
-      method: "POST",
-      body: JSON.stringify({ rules: els.personaGlobalRules.value.split("\n").map((value) => value.trim()).filter(Boolean) })
-    });
-    state.persona.globalRules = updated.rules;
-    personaDirty = false;
-    personaSignature = "";
-    els.personaStatus.textContent = "已保存，所有会话从下一轮起生效";
-    els.personaStatus.className = "form-status";
-    renderPersona(item);
-    scheduleRefresh();
-  } catch (error) {
-    personaDirty = true;
-    els.personaStatus.textContent = error.message;
-    els.personaStatus.className = "form-status error";
-    els.savePersonaButton.disabled = false;
   }
 });
 els.stickerLabelModel.addEventListener("change", () => {

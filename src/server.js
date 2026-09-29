@@ -47,7 +47,6 @@ const stickerStorePath = join(dataDir, "stickers.json");
 const stickerLabelSettingsPath = join(dataDir, "sticker-label-settings.json");
 const stickerCurationPath = join(dataDir, "sticker-curation.json");
 const qzoneStorePath = join(dataDir, "qzone.json");
-const personaRulesPath = join(dataDir, "persona-rules.json");
 const personaOwnerStylePath = join(dataDir, "persona-owner-style.json");
 const personaStyleSamplesPath = join(dataDir, "persona-style-samples.json");
 const { corePath: personaCorePath, examplesPath: personaExamplesPath } = resolvePersonaFiles(
@@ -172,7 +171,6 @@ await privateStore.init({ allowedGroups: configuredPrivateIds });
 const personaStore = new PersonaStore({
   corePath: personaCorePath,
   examplesPath: personaExamplesPath,
-  rulesPath: personaRulesPath,
   ownerStylePath: personaOwnerStylePath
 });
 await personaStore.init();
@@ -387,13 +385,6 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, publicState());
-    return;
-  }
-  if (req.method === "POST" && url.pathname === "/api/persona/rules") {
-    const body = parseJson(rawBody);
-    const rules = await personaStore.updateRules(body.rules);
-    recordEvent({ type: "persona-rules-updated", count: rules.length, at: new Date().toISOString() });
-    sendJson(res, 200, { rules });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/qq/stickers") {

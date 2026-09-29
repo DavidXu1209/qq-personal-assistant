@@ -486,7 +486,6 @@ export class GroupWorker {
     if (useMcpRead) prompt = buildMcpTurnPrompt({ includeBaseInstructions: includeBaseInstructions && !this.codex.supportsSystemPrompt, trigger: work.trigger, security, sharedSystemInstructions: this.codex.supportsSystemPrompt === true });
     if (this.persona) {
       try {
-        if (!autoSubscriptionTurn) await this.persona.learnExplicitRules?.({ messages: work.messages });
         const personaPrompt = this.codex.supportsSystemPrompt
           ? this.persona.systemPromptForClient?.() : (this.persona.systemPrompt?.() || this.persona.systemPromptForClient?.());
         if (typeof this.codex.setSystemPrompt === "function") this.codex.setSystemPrompt(personaPrompt);

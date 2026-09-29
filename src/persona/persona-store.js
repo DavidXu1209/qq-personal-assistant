@@ -2,24 +2,20 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { gatewaySystemInstructions } from "../security/policy.js";
 
-const STATE_VERSION = 1;
-const MAX_GLOBAL_RULES = 50;
 export const MAX_PUBLISHED_STYLE_RULES = 5;
 export const MAX_PUBLISHED_STYLE_RULE_CHARS = 55;
 export const MAX_PUBLISHED_STYLE_TOTAL_CHARS = 220;
 
 /** One shared persona. Per-conversation mood, relationship and feedback state is not loaded or injected. */
 export class PersonaStore {
-  constructor({ corePath, examplesPath, statePath, rulesPath = null, ownerStylePath = null,
+  constructor({ corePath, examplesPath, statePath, ownerStylePath = null,
     clock = () => new Date() } = {}) {
     this.corePath = corePath;
     this.examplesPath = examplesPath;
-    this.rulesPath = rulesPath || `${statePath}.rules.json`;
     this.ownerStylePath = ownerStylePath || `${statePath}.owner-style.json`;
     this.clock = clock;
     this.core = null;
     this.examples = [];
-    this.rules = { version: STATE_VERSION, updatedAt: null, rules: [] };
     this.ownerStyle = { publishedStyleRules: [], styleSummarizedAt: null };
     this.publishedStyleRules = [];
     this.saveChain = Promise.resolve();
@@ -28,20 +24,16 @@ export class PersonaStore {
   async init() {
     this.core = normalizeCore(await readJson(this.corePath, null));
     this.examples = normalizeExamples(await readJson(this.examplesPath, { examples: [] }));
-    this.rules = normalizeRules(await readJson(this.rulesPath, null));
     this.ownerStyle = normalizeOwnerStyle(await readJson(this.ownerStylePath, null));
     // Keep the last published summary and the pre-summary legacy snapshot,
     // but stop collecting per-turn style and social observations here.
     this.publishedStyleRules = this.ownerStyle.publishedStyleRules.length
       ? [...this.ownerStyle.publishedStyleRules]
       : deriveOwnerStyleRules(this.ownerStyle);
-    await Promise.all([
-      mkdir(dirname(this.rulesPath), { recursive: true }),
-      mkdir(dirname(this.ownerStylePath), { recursive: true })
-    ]);
+    await mkdir(dirname(this.ownerStylePath), { recursive: true });
   }
 
-  systemPrompt({ includeLearnedStyle = true, includeLearnedRules = true, includeGatewayTools = false } = {}) {
+  systemPrompt({ includeLearnedStyle = true, includeGatewayTools = false } = {}) {
     const core = this.core;
     return [
       "<laodai_persona>",
@@ -62,12 +54,11 @@ export class PersonaStore {
       "</laodai_persona>",
       ...(includeGatewayTools ? [gatewaySystemInstructions()] : []),
       ...(includeLearnedStyle ? ownerStyleRuleSection(this.publishedStyleRules) : []),
-      ...(includeLearnedRules ? section("OWNER 教过的长期规则", this.rules.rules) : []),
     ].filter(Boolean).join("\n");
   }
 
   stableSystemPrompt() {
-    return this.systemPrompt({ includeLearnedStyle: false, includeLearnedRules: false, includeGatewayTools: true });
+    return this.systemPrompt({ includeLearnedStyle: false, includeGatewayTools: true });
   }
 
   systemPromptForClient() {
@@ -104,33 +95,9 @@ export class PersonaStore {
 
   targetState() {
     return {
-      globalRules: [...this.rules.rules],
       publishedStyle: { rules: [...this.publishedStyleRules], summarizedAt: this.ownerStyle.styleSummarizedAt },
       promptPreview: this.previewPrompt()
     };
-  }
-
-  async updateRules(rules = []) {
-    this.rules.rules = normalizeRuleList(rules);
-    this.rules.updatedAt = this.clock().toISOString();
-    await this.saveRules();
-    return [...this.rules.rules];
-  }
-
-  async learnExplicitRules({ messages = [] } = {}) {
-    const learned = [];
-    for (const message of Array.isArray(messages) ? messages : []) {
-      if (message?.trust !== "OWNER") continue;
-      const rule = explicitOwnerRule(message?.text);
-      if (!rule || this.rules.rules.some((existing) => sameRule(existing, rule))) continue;
-      this.rules.rules.push(rule);
-      learned.push(rule);
-    }
-    if (!learned.length) return learned;
-    this.rules.rules = this.rules.rules.slice(-MAX_GLOBAL_RULES);
-    this.rules.updatedAt = this.clock().toISOString();
-    await this.saveRules();
-    return learned;
   }
 
   publicState() {
@@ -144,15 +111,9 @@ export class PersonaStore {
         "文字、表情、戳一戳、等待和沉默是等价动作"
       ],
       exampleCount: this.examples.length,
-      globalRules: [...this.rules.rules],
       publishedStyle: { rules: [...this.publishedStyleRules], summarizedAt: this.ownerStyle.styleSummarizedAt },
       promptPreview: this.previewPrompt()
     };
-  }
-
-  saveRules() {
-    this.saveChain = this.saveChain.then(() => atomicJson(this.rulesPath, this.rules));
-    return this.saveChain;
   }
 
   saveOwnerStyle() {
@@ -188,11 +149,6 @@ function normalizeExamples(value) {
   return (Array.isArray(value?.examples) ? value.examples : [])
     .filter((item) => clean(item?.situation, 240) && clean(item?.behavior, 300))
     .slice(0, 100);
-}
-
-function normalizeRules(value) {
-  const state = value && typeof value === "object" ? value : {};
-  return { version: STATE_VERSION, updatedAt: state.updatedAt || null, rules: normalizeRuleList(state.rules) };
 }
 
 function normalizeOwnerStyle(value) {
@@ -240,40 +196,6 @@ function ownerStyleRuleSection(rules) {
       + rules.map((rule) => `- ${rule}`).join("\n")
       + "\n这些是统计倾向，不要机械模仿；当前语境和上面的稳定人格仍然优先。"
   ] : [];
-}
-
-function normalizeRuleList(value) {
-  const list = Array.isArray(value) ? value : String(value || "").split("\n");
-  const output = [];
-  for (const item of list) {
-    const rule = cleanRule(item);
-    if (!rule || output.some((existing) => sameRule(existing, rule))) continue;
-    output.push(rule);
-  }
-  return output.slice(-MAX_GLOBAL_RULES);
-}
-
-function cleanRule(value) {
-  return clean(value, 300).replace(/^[\s\-•]+/u, "").replace(/[。.!！?？]+$/u, "").trim();
-}
-
-function sameRule(left, right) {
-  const a = cleanRule(left).toLowerCase();
-  const b = cleanRule(right).toLowerCase();
-  return a === b || (a.length >= 12 && b.includes(a)) || (b.length >= 12 && a.includes(b));
-}
-
-function explicitOwnerRule(value) {
-  const text = clean(value, 1000).replace(/@老代(?:（QQ\s*\d+）)?/gu, "").trim();
-  for (const pattern of [
-    /^\/人格记住\s+(.+)$/su,
-    /^老代[，,:：\s]*记住[：:\s]+(.+)$/su,
-    /^记住[：:\s]+(.+)$/su
-  ]) {
-    const match = text.match(pattern);
-    if (match) return cleanRule(match[1]);
-  }
-  return "";
 }
 
 function section(label, items) {

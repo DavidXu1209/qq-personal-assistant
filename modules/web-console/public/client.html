@@ -119,12 +119,9 @@
 
           <details id="personaDetails" class="session-details agent-settings-details persona-details">
             <summary>老代人格 <span id="personaSummary">所有会话共用</span></summary>
-            <form id="personaForm" class="agent-settings-form persona-form">
+            <div class="agent-settings-form persona-form">
               <p class="field-note">所有群聊、私聊和动态共用同一份人格；不再计算或注入每轮精力、熟悉度和关系状态。固定核心可在本机私人人格文件中编辑。</p>
-              <label for="personaGlobalRules">所有会话长期规则
-                <textarea id="personaGlobalRules" rows="3" maxlength="6000" placeholder="每行一条；也可由 OWNER 对老代说“记住：……”"></textarea>
-              </label>
-              <p class="field-note">保存后下一轮对所有会话生效。每天 04:00 的发言风格总结仍会更新共用人格。</p>
+              <p class="field-note">每天 04:00 的发言风格总结仍会更新共用人格。</p>
               <section class="persona-learning" aria-label="自动学习 OWNER 的表达方式">
                 <div class="persona-learning-head">
                   <span>每天 04:00 的表达总结</span>
@@ -137,11 +134,9 @@
               <details class="persona-preview-details">
                 <summary>查看共用人格</summary>
                 <pre id="personaPromptPreview" class="persona-prompt-preview">—</pre>
-                <p class="field-note">当前固定核心、长期规则和已发布的每日总结。本轮消息与权限另行提供。</p>
+                <p class="field-note">当前固定核心和已发布的每日总结。本轮消息与权限另行提供。</p>
               </details>
-              <p id="personaStatus" class="form-status" role="status" aria-live="polite"></p>
-              <button id="savePersonaButton" class="button primary full-button" type="submit" disabled>保存长期规则</button>
-            </form>
+            </div>
           </details>
 
           <details id="stickerLabelDetails" class="session-details agent-settings-details">

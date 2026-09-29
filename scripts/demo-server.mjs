@@ -31,9 +31,9 @@ const group = (id, name, extra = {}) => ({
 const state = {
   agentDispatch: { enabled: true },
   persona: {
-    name: "老代", globalRules: ["日常聊天先判断是否值得接话"],
+    name: "老代",
     publishedStyle: { rules: ["短句优先，内容较长时自然断句"], summarizedAt: now },
-    promptPreview: "<laodai_persona>\n你是老代。所有会话共用同一份人格。\nOWNER 教过的长期规则：日常聊天先判断是否值得接话\n每日表达总结：短句优先，内容较长时自然断句\n</laodai_persona>"
+    promptPreview: "<laodai_persona>\n你是老代。所有会话共用同一份人格。\n每日表达总结：短句优先，内容较长时自然断句\n</laodai_persona>"
   },
   ai: { provider: "workbuddy-agent-sdk", model: "hy4-preview", reasoningEffort: "low",
     availableModels: ["auto", "hy4-preview", "hy3"].map((model) => ({
