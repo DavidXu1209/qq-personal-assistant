@@ -272,6 +272,9 @@ test("WorkBuddy output deltas keep a long-running turn alive until output become
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(client.activeByGroup.has("streaming-group"), true);
   assert.equal(interrupts, 0);
+  // The production watchdog is intentionally unref'ed. Keep this test's event
+  // loop alive long enough for the expected silent interval to expire.
+  await new Promise((resolve) => setTimeout(resolve, 120));
   await rejected;
   assert.equal(interrupts, 1);
 });
