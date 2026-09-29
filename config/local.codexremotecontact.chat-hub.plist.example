@@ -15,8 +15,6 @@
   <dict>
     <key>CODEX_REMOTE_CONTACT_PROJECT_DIR</key>
     <string>__PROJECT_DIR__</string>
-    <key>CODEX_REMOTE_CONTACT_DISABLE_AUTH</key>
-    <string>0</string>
   </dict>
   <key>StandardOutPath</key>
   <string>__PROJECT_DIR__/runtime/logs/chat-hub.log</string>

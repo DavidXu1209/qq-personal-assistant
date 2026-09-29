@@ -65,3 +65,8 @@ test("both launchd runners use checked Node dotenv exports instead of shell sour
     assert.match(script, /eval "\$RUNTIME_ENV_EXPORTS"/);
   }
 });
+
+test("launchd leaves the Hub authentication choice to the private env file", async () => {
+  const template = await readFile(join(project, "config/local.codexremotecontact.chat-hub.plist.example"), "utf8");
+  assert.doesNotMatch(template, /<key>CODEX_REMOTE_CONTACT_DISABLE_AUTH<\/key>/);
+});
