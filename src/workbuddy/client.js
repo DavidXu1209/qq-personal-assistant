@@ -81,6 +81,7 @@ export class WorkBuddyClient {
     systemPrompt = "",
     timeoutMs = 10 * 60 * 1000,
     idleTimeoutMs = 3 * 60 * 1000,
+    compactionTimeoutMs = 6 * 60 * 1000,
     env = process.env,
   } = {}) {
     this.python =
@@ -94,6 +95,7 @@ export class WorkBuddyClient {
     this.systemPrompt = String(systemPrompt || "").trim();
     this.timeoutMs = timeoutMs;
     this.idleTimeoutMs = idleTimeoutMs;
+    this.compactionTimeoutMs = compactionTimeoutMs;
     this.env = env;
     this.child = null;
     this.startPromise = null;
@@ -363,6 +365,7 @@ export class WorkBuddyClient {
         resolve,
         reject,
         compacted: false,
+        compacting: false,
         cancelRequested: false,
         qqToolContext,
         mcpActions: [],
@@ -384,10 +387,15 @@ export class WorkBuddyClient {
   touchTurn(active) {
     if (!active || !this.activeByTurn.has(active.turnId) || active.timeoutInProgress) return;
     clearTimeout(active.progressTimeout);
+    const compacting = Boolean(active.compacting);
     active.progressTimeout = setTimeout(() => {
-      this.timeoutTurn(active, "WorkBuddy 长时间无进展；已中断本轮，待处理消息仍保留")
+      const reason = compacting
+        ? "WorkBuddy 上下文压缩超时；已中断本轮，待处理消息仍保留"
+        : "WorkBuddy 长时间无进展；已中断本轮，待处理消息仍保留";
+      this.timeoutTurn(active, reason)
         .catch((error) => this.finishTurn(active, error));
-    }, Math.max(1, Number(this.idleTimeoutMs) || 3 * 60 * 1000));
+    }, Math.max(1, Number(compacting ? this.compactionTimeoutMs : this.idleTimeoutMs)
+      || (compacting ? 6 : 3) * 60 * 1000));
     active.progressTimeout.unref?.();
   }
 
@@ -559,9 +567,15 @@ export class WorkBuddyClient {
       return;
     }
 
+    if (message.method === "thread/compacting") {
+      const active = this.activeByThread.get(String(message.params?.threadId || ""));
+      if (active) { active.compacting = true; this.touchTurn(active); }
+      return;
+    }
+
     if (message.method === "thread/compacted") {
       const active = this.activeByThread.get(String(message.params?.threadId || ""));
-      if (active) { active.compacted = true; this.touchTurn(active); }
+      if (active) { active.compacting = false; active.compacted = true; this.touchTurn(active); }
       return;
     }
 

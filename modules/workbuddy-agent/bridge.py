@@ -621,6 +621,18 @@ class Bridge:
             })
             return {"continue_": True, "suppressOutput": True}
 
+        async def pre_compact_hook(input_data: Dict[str, Any], _tool_use_id: Optional[str], _context: Dict[str, Any]):
+            """Give a bounded compaction grace period before the SDK stops yielding output."""
+            emit({
+                "jsonrpc": "2.0",
+                "method": "thread/compacting",
+                "params": {
+                    "threadId": session.thread_id,
+                    "trigger": str(input_data.get("trigger") or "auto"),
+                },
+            })
+            return {"continue_": True, "suppressOutput": True}
+
         self._ensure_resume_history(session.cwd, resume)
         extra_args = session_extra_args(session)
         mcp_endpoint = os.environ.get("CODEX_REMOTE_CONTACT_QQ_MCP_ENDPOINT", "")
@@ -664,6 +676,7 @@ class Bridge:
             system_prompt=AppendSystemPrompt(append="\n\n".join(system_parts))
             if system_parts else None,
             hooks={
+                "PreCompact": [HookMatcher(hooks=[pre_compact_hook], timeout=5.0)],
                 "PostCompact": [HookMatcher(hooks=[post_compact_hook], timeout=5.0)]
             },
             can_use_tool=can_use_tool,
@@ -803,6 +816,11 @@ class Bridge:
         if session is None:
             session = Session(thread_id, cwd)
             self.sessions[thread_id] = session
+        elif any(turn.thread_id == thread_id for turn in self.turns.values()):
+            # The active turn owns the SDK stream. Apply new launch parameters
+            # on its next turn instead of disconnecting a client mid-compaction.
+            log(f"thread/resume deferred until active turn completes id={thread_id}")
+            return {"thread": {"id": thread_id}, "deferred": True}
         next_model = model if "model" in params else session.model
         next_effort = normalize_effort(params.get("effort")) if "effort" in params else session.effort
         next_context = normalize_context_limit(params.get("contextTokenLimit"))

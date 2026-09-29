@@ -130,6 +130,48 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source_server["env"]["CODEX_REMOTE_CONTACT_QQ_MCP_SOURCE_ONLY"], "1")
         self.assertEqual(source_server["tools"], {})
 
+    async def test_compaction_hooks_report_both_phases_without_changing_the_thread(self) -> None:
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-compaction", "/tmp")
+        fake = FakeClient()
+        fake.connect = AsyncMock()
+        with patch("codebuddy_agent_sdk.CodeBuddySDKClient", return_value=fake) as factory:
+            await bridge._make_client(session)
+        hooks = factory.call_args.kwargs["options"].hooks
+        events = []
+        with patch.object(BRIDGE_MODULE, "emit", side_effect=events.append):
+            await hooks["PreCompact"][0].hooks[0]({"trigger": "auto"}, None, {})
+            await hooks["PostCompact"][0].hooks[0]({"trigger": "auto"}, None, {})
+        self.assertEqual([event["method"] for event in events], ["thread/compacting", "thread/compacted"])
+        self.assertTrue(all(event["params"]["threadId"] == session.thread_id for event in events))
+
+    async def test_resume_defers_parameter_changes_while_turn_is_active(self) -> None:
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-active-switch", "/tmp")
+        session.model = "hy3"
+        session.context_token_limit = "100000"
+        client = FakeClient()
+        session.client = client
+        bridge.sessions[session.thread_id] = session
+        turn = BRIDGE_MODULE.Turn(session.thread_id, "turn-active-switch", "group-active-switch")
+        bridge.turns[turn.turn_id] = turn
+        bridge.active_by_group[turn.group_id] = turn
+        params = {"threadId": session.thread_id, "cwd": "/tmp", "model": "glm-5.3-flash",
+                  "contextTokenLimit": "100000", "workingMode": "agent"}
+
+        deferred = await bridge.thread_resume(params)
+        self.assertTrue(deferred["deferred"])
+        self.assertEqual(session.model, "hy3")
+        self.assertIs(session.client, client)
+        self.assertFalse(client.disconnected)
+
+        bridge._release_turn(turn)
+        resumed = await bridge.thread_resume(params)
+        self.assertNotIn("deferred", resumed)
+        self.assertEqual(session.model, "glm-5.3-flash")
+        self.assertIsNone(session.client)
+        self.assertTrue(client.disconnected)
+
     async def test_headless_agent_blocks_new_plan_but_can_exit_legacy_plan_with_scoped_permission(self) -> None:
         from codebuddy_agent_sdk import PermissionResultAllow
         bridge = BRIDGE_MODULE.Bridge()
