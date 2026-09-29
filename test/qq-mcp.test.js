@@ -201,6 +201,54 @@ test("WorkBuddy prefetches live messages before starting the model and does not 
   assert.equal(client.activeByThread.size, 0);
 });
 
+test("WorkBuddy timeout keeps the local writer until bridge interruption is acknowledged", async () => {
+  const client = new WorkBuddyClient();
+  let acknowledge;
+  const interrupted = new Promise((resolve) => { acknowledge = resolve; });
+  client.request = async (method) => {
+    assert.equal(method, "turn/interrupt");
+    await interrupted;
+    return { ok: true };
+  };
+  let rejected;
+  const completed = new Promise((resolve) => { rejected = resolve; });
+  const active = {
+    groupId: "group-test", threadId: "thread-test", turnId: "turn-test",
+    cancelRequested: false, timeout: null, reject: rejected, resolve: rejected
+  };
+  client.activeByThread.set(active.threadId, active);
+  client.activeByTurn.set(active.turnId, active);
+  client.activeByGroup.set(active.groupId, active);
+  const timingOut = client.timeoutTurn(active);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(active.cancelRequested, true);
+  assert.equal(client.activeByGroup.get(active.groupId), active);
+  acknowledge();
+  await timingOut;
+  assert.match((await completed).message, /timed out/);
+  assert.equal(client.activeByGroup.has(active.groupId), false);
+});
+
+test("WorkBuddy progress watchdog interrupts a silent turn and retains a specific error", async () => {
+  const client = new WorkBuddyClient({ idleTimeoutMs: 100, timeoutMs: 1000 });
+  client.ensureProcess = async () => {};
+  let interrupts = 0;
+  client.request = async (method) => {
+    if (method === "turn/start") return { turn: { id: "silent-turn" } };
+    assert.equal(method, "turn/interrupt");
+    interrupts++;
+    return { ok: true };
+  };
+  const running = client.runTurn({ groupId: "silent-group", threadId: "silent-thread", prompt: "test", prefetchQqMessages: false });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  client.handleMessage({ method: "turn/progress", params: { threadId: "silent-thread", turnId: "silent-turn", stage: "response" } });
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal(client.activeByGroup.has("silent-group"), true, "fresh progress resets the watchdog");
+  await assert.rejects(running, /长时间无进展.*待处理消息仍保留/);
+  assert.equal(interrupts, 1);
+  assert.equal(client.activeByGroup.size, 0);
+});
+
 test("WorkBuddy loopback MCP requires its private token and returns queued actions to the existing delivery parser", async () => {
   const client = new WorkBuddyClient();
   await client.ensureMcpGateway();

@@ -187,6 +187,10 @@ def full_access_roots() -> list[str]:
 
 def session_extra_args(session: "Session") -> Dict[str, str]:
     args: Dict[str, str] = {"autocompact": session.context_token_limit}
+    if can_exit_plan_mode(session):
+        # A resumed legacy session may still be in Plan mode. If it exits,
+        # restore only the permission level already selected by the gateway.
+        args["permission-mode-before-plan"] = session.permission_mode
     # Do not pass WorkBuddy CLI --json-schema here.  Some otherwise capable
     # models answer the AUTO notice correctly but never invoke the CLI's
     # synthetic StructuredOutput tool.  The CLI then keeps injecting
@@ -201,6 +205,11 @@ def session_extra_args(session: "Session") -> Dict[str, str]:
             separators=(",", ":"),
         )
     return args
+
+
+def can_exit_plan_mode(session: "Session") -> bool:
+    return (session.working_mode == "agent" and not session.source_read_only
+            and session.permission_mode in ("acceptEdits", "bypassPermissions"))
 
 
 def log(*args: Any) -> None:
@@ -594,6 +603,8 @@ class Bridge:
             # This approves only our local MCP route. The Node gateway still
             # validates the active turn, OWNER/poke scope and exact sticker ID.
             requested = _input.get("toolName") if name == "DeferExecuteTool" else name
+            if requested == "ExitPlanMode" and can_exit_plan_mode(session):
+                return PermissionResultAllow()
             if isinstance(requested, str) and requested.startswith("mcp__qq_gateway__"):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="No permission handler provided")
@@ -641,6 +652,10 @@ class Bridge:
             model=session.model,
             effort=session.effort,
             permission_mode=session.permission_mode,
+            # No interactive plan-approval UI. Block new Plan mode; only a
+            # legacy Agent session may exit a previously persisted plan, with
+            # the restored permission pinned to the gateway's current scope.
+            disallowed_tools=["EnterPlanMode"] + ([] if can_exit_plan_mode(session) else ["ExitPlanMode"]),
             # --tools selects built-in tools; MCP tools are added by the server
             # manager. AUTO retains its broker-only built-ins and scoped source
             # reader, which the inline MCP config makes directly available.
@@ -788,7 +803,7 @@ class Bridge:
         if session is None:
             session = Session(thread_id, cwd)
             self.sessions[thread_id] = session
-        next_model = model or session.model
+        next_model = model if "model" in params else session.model
         next_effort = normalize_effort(params.get("effort")) if "effort" in params else session.effort
         next_context = normalize_context_limit(params.get("contextTokenLimit"))
         next_mode = normalize_working_mode(params.get("workingMode"))
@@ -871,6 +886,7 @@ class Bridge:
         incoming_output_schema = normalize_output_schema(params.get("outputSchema"))
         incoming_source_read_only = bool(params.get("sourceReadOnly"))
         incoming_system_prompt = normalize_system_prompt(params.get("systemPrompt"))
+        refresh_client = bool(params.get("refreshClientBeforeTurn"))
         client = None
 
         try:
@@ -878,6 +894,7 @@ class Bridge:
                 # 档位是 CLI 启动参数（--effort），热改不了：变了就重建 client 并续接同一 thread
                 incoming_effort = normalize_effort(params.get("effort"))
                 launch_changed = any([
+                    model != session.model,
                     incoming_effort != session.effort,
                     incoming_context != session.context_token_limit,
                     incoming_mode != session.working_mode,
@@ -890,13 +907,14 @@ class Bridge:
                 if launch_changed:
                     log(
                         "启动参数变化，重建 client 续接 thread: "
-                        f"effort={incoming_effort or 'auto'} context={incoming_context} mode={incoming_mode} "
+                        f"model={model or 'auto'} effort={incoming_effort or 'auto'} context={incoming_context} mode={incoming_mode} "
                         f"permission={permission_mode} schema={'on' if incoming_output_schema else 'off'} "
                         f"source_only={incoming_source_read_only}"
                     )
                     if session.client is not None:
                         await self._disconnect_client(session.client)
                         session.client = None
+                    session.model = model
                     session.effort = incoming_effort
                     session.context_token_limit = incoming_context
                     session.working_mode = incoming_mode
@@ -906,16 +924,19 @@ class Bridge:
                     session.source_read_only = incoming_source_read_only
                     session.system_prompt = incoming_system_prompt
 
+                if refresh_client and session.client is not None and session.sdk_session_id:
+                    old_client = session.client
+                    session.client = None
+                    await self._disconnect_client(old_client)
+                    log(f"发送校验轮次重新连接原会话 thread={turn.thread_id}")
+
                 client = session.client
                 if client is None:
                     client = await self._make_client(session, resume=session.sdk_session_id)
-                # 运行时热改模型 / 权限（不用重建进程）
-                if model and model != session.model:
-                    try:
-                        await client.set_model(model)
-                        session.model = model
-                    except Exception as exc:
-                        log(f"set_model 失败（忽略）: {exc}")
+                emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                    "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "client_ready"}})
+                # Permission can still change within a turn, but model and
+                # context are launch parameters: reconnect the same SDK session.
                 if permission_mode != session.permission_mode:
                     try:
                         await client.set_permission_mode(permission_mode)
@@ -926,11 +947,15 @@ class Bridge:
                 client = await self._send_prompt_resilient(
                     session, client, prompt, image_paths
                 )
+                emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                    "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "prompt_sent"}})
 
                 result_message = None
                 async for message in client.receive_response():
                     if turn.cancelled:
                         break
+                    emit({"jsonrpc": "2.0", "method": "turn/progress", "params": {
+                        "threadId": turn.thread_id, "turnId": turn.turn_id, "stage": "response"}})
                     if isinstance(message, ErrorMessage):
                         raise WorkBuddyModelFailure(message.error or "WorkBuddy 返回未知错误")
                     if isinstance(message, ResultMessage):

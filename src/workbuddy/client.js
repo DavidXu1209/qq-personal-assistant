@@ -80,6 +80,7 @@ export class WorkBuddyClient {
     effort,
     systemPrompt = "",
     timeoutMs = 10 * 60 * 1000,
+    idleTimeoutMs = 3 * 60 * 1000,
     env = process.env,
   } = {}) {
     this.python =
@@ -92,6 +93,7 @@ export class WorkBuddyClient {
     this.effort = effort;
     this.systemPrompt = String(systemPrompt || "").trim();
     this.timeoutMs = timeoutMs;
+    this.idleTimeoutMs = idleTimeoutMs;
     this.env = env;
     this.child = null;
     this.startPromise = null;
@@ -319,7 +321,7 @@ export class WorkBuddyClient {
     groupId, threadId, prompt, imagePaths = [], turnSandbox = { type: "readOnly" },
     model = this.model, effort = this.effort, contextTokenLimit = "auto", workingMode = "agent",
     cwd = null, outputSchema = null, qqToolContext = null, onDelta = null,
-    prefetchQqMessages = true,
+    prefetchQqMessages = true, refreshClientBeforeTurn = false, turnTimeoutMs = this.timeoutMs,
   }) {
     await this.ensureProcess();
     if (this.activeByThread.has(String(threadId))) {
@@ -343,6 +345,7 @@ export class WorkBuddyClient {
       workingMode,
       cwd,
       outputSchema,
+      refreshClientBeforeTurn: Boolean(refreshClientBeforeTurn),
       sourceReadOnly: Boolean(qqToolContext?.requireSourceRead),
       systemPrompt: /^(?:sticker-(?:label|prune)|persona-style)-/u.test(String(threadId)) ? "" : this.systemPrompt,
       turnSandbox,
@@ -365,25 +368,66 @@ export class WorkBuddyClient {
         mcpActions: [],
         mcpChain: Promise.resolve(),
         timeout: null,
+        progressTimeout: null,
+        timeoutInProgress: false,
       };
       active.timeout = setTimeout(() => {
-        if (!this.activeByTurn.has(active.turnId)) return;
-        active.cancelRequested = true;
-        // Interrupt the bridge before releasing the local writer. Otherwise a
-        // timed-out model can keep its SDK session busy and block the retry.
-        this.request("turn/interrupt", { threadId: active.threadId, turnId: active.turnId }, 15_000).catch(() => {});
-        this.finishTurn(active, new Error("WorkBuddy turn timed out"));
-      }, this.timeoutMs);
+        this.timeoutTurn(active).catch((error) => this.finishTurn(active, error));
+      }, Math.max(1, Number(turnTimeoutMs) || this.timeoutMs));
       this.activeByThread.set(active.threadId, active);
       this.activeByTurn.set(active.turnId, active);
       this.activeByGroup.set(active.groupId, active);
+      this.touchTurn(active);
     });
+  }
+
+  touchTurn(active) {
+    if (!active || !this.activeByTurn.has(active.turnId) || active.timeoutInProgress) return;
+    clearTimeout(active.progressTimeout);
+    active.progressTimeout = setTimeout(() => {
+      this.timeoutTurn(active, "WorkBuddy 长时间无进展；已中断本轮，待处理消息仍保留")
+        .catch((error) => this.finishTurn(active, error));
+    }, Math.max(1, Number(this.idleTimeoutMs) || 3 * 60 * 1000));
+    active.progressTimeout.unref?.();
+  }
+
+  async timeoutTurn(active, reason = "WorkBuddy turn timed out") {
+    if (!this.activeByTurn.has(active.turnId) || active.timeoutInProgress) return;
+    active.timeoutInProgress = true;
+    active.timeoutReason = reason;
+    clearTimeout(active.progressTimeout);
+    clearTimeout(active.timeout);
+    active.cancelRequested = true;
+    try {
+      // The bridge releases its target lock before acknowledging interrupt.
+      // Do not free the local writer first or an immediate retry collides with it.
+      await this.request("turn/interrupt", { threadId: active.threadId, turnId: active.turnId }, 30_000);
+    } catch {
+      // If the bridge cannot confirm cleanup, retire it before allowing another
+      // turn. Every target's pending messages and confirmed sends remain durable.
+      const child = this.child;
+      if (child && child.exitCode == null) {
+        await new Promise((resolve) => {
+          const force = setTimeout(() => child.kill("SIGKILL"), 5000);
+          const giveUp = setTimeout(resolve, 10_000);
+          child.once("close", () => {
+            clearTimeout(force);
+            clearTimeout(giveUp);
+            resolve();
+          });
+          child.kill("SIGTERM");
+        });
+      }
+    }
+    this.finishTurn(active, new Error(reason));
   }
 
   async interruptGroup(groupId) {
     const active = this.activeByGroup.get(String(groupId));
     if (!active) return false;
     active.cancelRequested = true;
+    clearTimeout(active.timeout);
+    clearTimeout(active.progressTimeout);
     try {
       await this.request(
         "turn/interrupt",
@@ -509,6 +553,7 @@ export class WorkBuddyClient {
       if (!active || String(params.threadId || "") !== active.threadId) return;
       const delta = String(params.delta || "");
       if (!delta) return;
+      this.touchTurn(active);
       active.text += delta;
       if (!active.qqToolContext?.liveMode && !(active.mcpActions || []).some((action) => action.kind === "message")) active.onDelta?.(delta, active.text);
       return;
@@ -516,7 +561,14 @@ export class WorkBuddyClient {
 
     if (message.method === "thread/compacted") {
       const active = this.activeByThread.get(String(message.params?.threadId || ""));
-      if (active) active.compacted = true;
+      if (active) { active.compacted = true; this.touchTurn(active); }
+      return;
+    }
+
+    if (message.method === "turn/progress") {
+      const params = message.params || {};
+      const active = this.activeByTurn.get(String(params.turnId || ""));
+      if (active && String(params.threadId || "") === active.threadId) this.touchTurn(active);
       return;
     }
 
@@ -526,7 +578,7 @@ export class WorkBuddyClient {
       const active = this.activeByTurn.get(turnId);
       if (!active || String(params.threadId || "") !== active.threadId) return;
       if (active.cancelRequested || params.turn?.status === "interrupted") {
-        this.finishTurn(active, new WorkBuddyTurnCancelledError());
+        this.finishTurn(active, active.timeoutReason ? new Error(active.timeoutReason) : new WorkBuddyTurnCancelledError());
         return;
       }
       const status = params.turn?.status;
@@ -566,13 +618,14 @@ export class WorkBuddyClient {
         ? this.activeByTurn.get(turnId)
         : this.activeByThread.get(String(params.threadId || ""));
       if (!active) return;
-      this.finishTurn(active, new Error(params.error?.message || "WorkBuddy bridge error"));
+      this.finishTurn(active, new Error(active.timeoutReason || params.error?.message || "WorkBuddy bridge error"));
     }
   }
 
   finishTurn(active, error = null, value = null) {
     if (!active || !this.activeByTurn.has(active.turnId)) return;
     clearTimeout(active.timeout);
+    clearTimeout(active.progressTimeout);
     this.activeByTurn.delete(active.turnId);
     this.activeByThread.delete(active.threadId);
     this.activeByGroup.delete(active.groupId);

@@ -118,15 +118,35 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         normal_server = normal_options.mcp_servers["qq_gateway"]
         self.assertEqual(normal_options.effort, "low")
         self.assertIsNone(normal_options.tools)
+        self.assertEqual(normal_options.disallowed_tools, ["EnterPlanMode", "ExitPlanMode"])
         self.assertFalse(normal_server["defer_loading"])
         self.assertEqual(normal_server["tools"], {})
         source_options = factory.call_args_list[1].kwargs["options"]
         self.assertEqual(source_options.tools, ["ToolSearch", "DeferExecuteTool"])
+        self.assertEqual(source_options.disallowed_tools, ["EnterPlanMode", "ExitPlanMode"])
         self.assertEqual(source_options.permission_mode, "default")
         source_server = source_options.mcp_servers["qq_gateway"]
         self.assertFalse(source_server["defer_loading"])
         self.assertEqual(source_server["env"]["CODEX_REMOTE_CONTACT_QQ_MCP_SOURCE_ONLY"], "1")
         self.assertEqual(source_server["tools"], {})
+
+    async def test_headless_agent_blocks_new_plan_but_can_exit_legacy_plan_with_scoped_permission(self) -> None:
+        from codebuddy_agent_sdk import PermissionResultAllow
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-legacy-plan", "/tmp")
+        session.permission_mode = "acceptEdits"
+        fake = FakeClient()
+        fake.connect = AsyncMock()
+        with patch("codebuddy_agent_sdk.CodeBuddySDKClient", return_value=fake) as factory:
+            await bridge._make_client(session)
+        options = factory.call_args.kwargs["options"]
+        self.assertEqual(options.disallowed_tools, ["EnterPlanMode"])
+        self.assertEqual(options.extra_args["permission-mode-before-plan"], "acceptEdits")
+        self.assertIsInstance(await options.can_use_tool("ExitPlanMode", {}, None), PermissionResultAllow)
+
+        session.working_mode = "plan"
+        self.assertEqual(BRIDGE_MODULE.can_exit_plan_mode(session), False)
+        self.assertNotIn("permission-mode-before-plan", BRIDGE_MODULE.session_extra_args(session))
 
     async def test_release_before_completion_does_not_remove_the_next_turn(self) -> None:
         bridge = BRIDGE_MODULE.Bridge()
@@ -174,6 +194,75 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(turn.group_id, bridge.active_by_group)
         self.assertTrue(turn.done.is_set())
         self.assertTrue(turn.task.done())
+
+    async def test_send_recovery_refreshes_cli_but_resumes_the_same_session(self) -> None:
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-recovery", "/tmp")
+        session.sdk_session_id = "sdk-session-recovery"
+        original = FakeClient()
+        session.client = original
+        bridge.sessions[session.thread_id] = session
+        turn = BRIDGE_MODULE.Turn(session.thread_id, "turn-recovery", "group-recovery")
+        bridge.turns[turn.turn_id] = turn
+        bridge.active_by_group[turn.group_id] = turn
+        replacement = FakeClient()
+        async def responses():
+            from codebuddy_agent_sdk import ResultMessage
+            yield ResultMessage(subtype="success", duration_ms=0, duration_api_ms=0,
+                is_error=False, num_turns=1, session_id="sdk-session-recovery", result="已完成")
+        replacement.receive_response = responses
+        async def make_client(target_session, resume=None):
+            self.assertIs(target_session, session)
+            self.assertEqual(resume, "sdk-session-recovery")
+            target_session.client = replacement
+            return replacement
+        bridge._make_client = AsyncMock(side_effect=make_client)
+        bridge._send_prompt_resilient = AsyncMock(return_value=replacement)
+        bridge._remember_session_id = lambda *_args: None
+        events = []
+        with patch.object(BRIDGE_MODULE, "emit", side_effect=events.append):
+            await bridge._run_turn(turn, session, {"prompt": "校验", "cwd": "/tmp",
+                "turnSandbox": {"type": "readOnly"}, "refreshClientBeforeTurn": True})
+        self.assertTrue(original.disconnected)
+        self.assertIs(session.client, replacement)
+        self.assertTrue(any(event.get("method") == "turn/completed" for event in events))
+
+    async def test_model_change_reconnects_the_same_session_without_hot_set_model(self) -> None:
+        from codebuddy_agent_sdk import ResultMessage
+        bridge = BRIDGE_MODULE.Bridge()
+        session = BRIDGE_MODULE.Session("thread-model-change", "/tmp")
+        session.model = "hy3"
+        session.sdk_session_id = "sdk-session-model-change"
+        original = FakeClient()
+        session.client = original
+        bridge.sessions[session.thread_id] = session
+        replacement = FakeClient()
+        replacement.set_model = AsyncMock()
+        async def responses():
+            yield ResultMessage(subtype="success", duration_ms=0, duration_api_ms=0,
+                is_error=False, num_turns=1, session_id=session.sdk_session_id, result="已完成")
+        replacement.receive_response = responses
+        async def make_client(target_session, resume=None):
+            self.assertIs(target_session, session)
+            self.assertEqual(resume, "sdk-session-model-change")
+            self.assertEqual(target_session.model, "glm-5.3-flash")
+            target_session.client = replacement
+            return replacement
+        bridge._make_client = AsyncMock(side_effect=make_client)
+        bridge._send_prompt_resilient = AsyncMock(return_value=replacement)
+        bridge._remember_session_id = lambda *_args: None
+        turn = BRIDGE_MODULE.Turn(session.thread_id, "turn-model-change", "group-model-change")
+        bridge.turns[turn.turn_id] = turn
+        bridge.active_by_group[turn.group_id] = turn
+        events = []
+        with patch.object(BRIDGE_MODULE, "emit", side_effect=events.append):
+            await bridge._run_turn(turn, session, {"prompt": "hello", "cwd": "/tmp",
+                "model": "glm-5.3-flash", "turnSandbox": {"type": "readOnly"}})
+        self.assertTrue(original.disconnected)
+        self.assertIs(session.client, replacement)
+        replacement.set_model.assert_not_awaited()
+        self.assertTrue(any(event.get("method") == "turn/progress" for event in events))
+        self.assertTrue(any(event.get("method") == "turn/completed" for event in events))
 
     def test_transport_failure_detection_walks_exception_chain(self) -> None:
         bridge = BRIDGE_MODULE.Bridge()
