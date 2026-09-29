@@ -219,6 +219,7 @@ class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(await options.can_use_tool("ExitPlanMode", {}, None), PermissionResultAllow)
         self.assertIsInstance(await options.can_use_tool("Bash", {}, None), PermissionResultDeny)
         self.assertEqual(session.sdk_session_id, "sdk-agent-new")
+        self.assertEqual(session.retired_sdk_session_ids, {"sdk-plan-old"})
         self.assertIsNone(session.client)
         remember.assert_called_once_with("thread-legacy-plan", "sdk-agent-new")
         self.assertTrue(fake.disconnected)

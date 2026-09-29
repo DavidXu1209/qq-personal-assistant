@@ -308,6 +308,7 @@ class Session:
         # 注意：thread_id 是桥这边自己编的，不能拿去当 resume 参数 —— 用它续接
         # CLI 不认识、整轮静默空返回（这也是 QQ 侧「无法安全回复」空话术的根因）。
         self.sdk_session_id: Optional[str] = None
+        self.retired_sdk_session_ids: set[str] = set()
         self.lock = asyncio.Lock()
         self.closed = False
 
@@ -641,6 +642,7 @@ class Bridge:
 
         if not repaired_sdk_id or repaired_sdk_id == old_sdk_id:
             raise RuntimeError("旧 Plan 会话迁移没有生成新的 Agent session")
+        session.retired_sdk_session_ids.add(old_sdk_id)
         session.sdk_session_id = repaired_sdk_id
         session.client = None
         self._remember_session_id(session.thread_id, repaired_sdk_id)
@@ -1034,7 +1036,7 @@ class Bridge:
                                 result_message = message
                                 # SDK 的真实会话 id：重建 client / 网关重启后的续接全靠它
                                 sdk_id = getattr(message, "session_id", None)
-                                if sdk_id:
+                                if sdk_id and sdk_id not in session.retired_sdk_session_ids:
                                     session.sdk_session_id = sdk_id
                                     self._remember_session_id(turn.thread_id, sdk_id)
                             model_error = model_message_error(message)
