@@ -1,15 +1,40 @@
 import { setTimeout as pause } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import { handleQqMcpTool } from "./mcp-actions.js";
 import { QQ_FACE_ALIASES } from "./file-directive.js";
-import { sanitizeGroupReply } from "../security/policy.js";
+import { AGENT_QQ_ID, OWNER_QQ_ID, sanitizeGroupReply } from "../security/policy.js";
 import { QqMessageReader, MESSAGE_READER_TOOLS } from "./message-reader.js";
+import { readGroupManagement, manageGroup } from "./group-management.js";
 
 const PAGE_SIZE = 40;
 const MAX_WAIT_MS = 8000;
 const MAX_ACTIVE_WAIT_SECONDS = 30;
+const SCHEDULED_QZONE_FEED_TOOLS = new Set(["read_qzone_feed_batch", "submit_qzone_decisions"]);
+const SCHEDULED_QZONE_POST_TOOLS = new Set(["propose_qzone_post", "skip_qzone_post"]);
 
 function answer(text, isError = false) {
   return { isError, content: [{ type: "text", text: String(text) }] };
+}
+
+/** Only a directly read OWNER group message in this turn may authorize management. */
+export function currentOwnerManagementMessage(messageReader, groupId, ownerId, isRecalled = () => false) {
+  return [...(messageReader?.messages?.values() || [])]
+    .filter((message) => String(message.groupId) === String(groupId)
+      && String(message.senderId) === String(ownerId) && message.trust === "OWNER"
+      && message.source === "qq" && Number.isInteger(Number(message.sequence))
+      && Number(message.sequence) > 0 && !isRecalled(message.messageId))
+    .sort((a, b) => Number(a.sequence) - Number(b.sequence)).at(-1) || null;
+}
+
+/** Only unread QQ messages actually captured from this target can elevate Space access. */
+function currentOwnerQzoneMessages(store, messageReader, targetId) {
+  const pending = new Set(store.snapshot(targetId).pendingMessages.map((message) => String(message.messageId)));
+  return [...messageReader.messages.values()].filter((message) =>
+    pending.has(String(message.messageId)) && String(message.groupId) === String(targetId)
+      && String(message.senderId) === OWNER_QQ_ID && message.trust === "OWNER"
+      && message.source === "qq" && Number.isInteger(Number(message.sequence))
+      && Number(message.sequence) > 0 && !store.isRecalled?.(targetId, message.messageId))
+    .map((message) => ({ ...message, currentOwnerMessage: true }));
 }
 
 /** Prepare the first bounded page using the real MCP reader, not a second history. */
@@ -32,7 +57,8 @@ export function createLiveConversationTools({
   store, targetId, targetType, oneBot, fileManager, stickerManager, qzone,
   trigger, triggerMessages, security, initialImageSequence, renderMessages,
   pokeSenderId = null, allowedPokeUserIds = [], stickers = [], canRun = () => true,
-  readOnlyContextMessages = [], messageReader = new QqMessageReader({ oneBot })
+  readOnlyContextMessages = [], messageReader = new QqMessageReader({ oneBot }), onEvent = () => {},
+  scheduledTask = false, qzoneActions = null
 }) {
   const context = {
     liveMode: true,
@@ -42,37 +68,69 @@ export function createLiveConversationTools({
     allowImages: Boolean(security.allowQqFiles),
     allowReactions: true,
     allowPoke: targetType === "group",
-    allowQzonePost: Boolean(qzone?.isOwnerAutonomousTurn?.(triggerMessages, trigger, targetType, targetId)
+    allowQzonePost: scheduledTask && Boolean(qzoneActions) || Boolean(qzone?.isOwnerAutonomousTurn?.(triggerMessages, trigger, targetType, targetId)
       || qzone?.isOwnerPostTurn(triggerMessages, trigger, targetType, targetId)),
+    allowQzoneFeed: scheduledTask && Boolean(qzoneActions) || Boolean(qzone?.isOwnerFeedTurn?.(triggerMessages, trigger, targetType, targetId)),
     stickers, pokeSenderId, allowedPokeUserIds,
-    requireRead: true,
+    canReplyToMessage: (messageId) => {
+      const message = messageReader.messages.get(String(messageId));
+      return Boolean(message && String(message.groupId) === String(targetId)
+        && !store.isRecalled?.(targetId, messageId));
+    },
+    requireRead: !scheduledTask,
+    scheduledTask,
+    scheduledQzonePost: scheduledTask,
+    qzoneReadCalled: false,
     readCalled: false,
     lastReadSequence: 0,
     actionCount: 0,
+    managementActionCount: (store.snapshot(targetId).liveSession?.actions || [])
+      .filter((item) => item.kind === "group_management").length,
+    qzoneActionCount: (store.snapshot(targetId).liveSession?.actions || [])
+      .filter((item) => item.kind === "qzone_engagement").length,
     displayedActions: [],
     ended: false,
     deferredNewMedia: false,
     failed: false
   };
   const recoveredMessages = (store.snapshot(targetId).liveSession?.actions || [])
-    .filter((item) => item.kind === "message")
+    .filter((item) => item.kind === "message" && !item.recalledAt)
     .map((item) => `${Number(item.observedSequence || 0)}:${String(item.summary || "")}`);
+  const qzoneFeeds = new Map();
+
+  const currentQzoneMessages = () => [...(triggerMessages || []),
+    ...currentOwnerQzoneMessages(store, messageReader, targetId)];
+  const refreshQzonePermissions = () => {
+    if (scheduledTask) return;
+    const messages = currentQzoneMessages();
+    context.allowQzonePost = Boolean(qzone?.isOwnerAutonomousTurn?.(messages, trigger, targetType, targetId)
+      || qzone?.isOwnerPostTurn(messages, trigger, targetType, targetId));
+    context.allowQzoneFeed = Boolean(qzone?.isOwnerFeedTurn?.(messages, trigger, targetType, targetId));
+  };
 
   context.liveTool = async (name, args = {}, active) => {
     if (active?.cancelRequested || !canRun()) return answer("本轮已停止或回复开关已关闭，不能再操作 QQ。", true);
     if (context.failed) return answer("本轮发送状态有误，已停止操作；待处理消息仍保留。", true);
     if (context.ended && name !== "end_conversation") return answer("本轮对话已经结束，不能再读取或发送。", true);
+    if (SCHEDULED_QZONE_FEED_TOOLS.has(name)) {
+      return answer("旧版动态读取工具已停用。请用 read_qzone_feeds 读取，再按需用 engage_qzone_feed 点赞或评论。", true);
+    }
+    if (SCHEDULED_QZONE_POST_TOOLS.has(name)) {
+      return answer("旧版动态发布提议工具已停用。需要发布时用 post_qzone；不想发布可直接结束轮次。", true);
+    }
     if (MESSAGE_READER_TOOLS.has(name)) {
       if (!context.readCalled) return answer("请先读取当前会话的消息，再展开转发或打开链接。", true);
       return messageReader.callTool(name, args, { shouldStop: () => active?.cancelRequested || !canRun() });
     }
     if (name === "end_conversation") {
-      if (!context.readCalled) return answer("请先调用 read_messages 读取当前消息，再决定结束。", true);
-      if (!context.ended) await store.armReplyFollowup(targetId, {
+      if (!scheduledTask && !context.readCalled) return answer("请先调用 read_messages 读取当前消息，再决定结束。", true);
+      if (!scheduledTask && !context.ended) await store.armReplyFollowup(targetId, {
         deferredImageAfterSequence: context.deferredNewMedia ? context.lastReadSequence : null
       });
       context.ended = true;
-      return answer("本轮结束；网关观察两分钟，有新消息会重新唤醒你自行判断是否回复，安静两分钟才退出。请直接结束模型轮次，不再输出发送正文。");
+      return answer(scheduledTask
+        ? "本次定时模型轮次已结束；读取过的聊天消息仍留在原来的待处理队列，后续任务继续按顺序执行。"
+        : "本轮结束；网关观察两分钟，有新消息会重新唤醒你自行判断是否回复，安静两分钟才退出。请直接结束模型轮次，不再输出发送正文。");
     }
     if (name === "read_messages" || name === "wait_for_messages") {
       const activeWait = name === "wait_for_messages";
@@ -110,6 +168,7 @@ export function createLiveConversationTools({
       if (first) messageReader.capture(readOnlyContextMessages);
       if (readable.length) {
         context.lastReadSequence = Number(readable.at(-1).sequence);
+        if (!scheduledTask) await store.markLiveReadSequence(targetId, context.lastReadSequence);
         for (const message of readable) {
           const id = String(message.senderId || "");
           if (/^\d{5,14}$/.test(id) && !context.allowedPokeUserIds.includes(id)) context.allowedPokeUserIds.push(id);
@@ -117,12 +176,129 @@ export function createLiveConversationTools({
       }
       context.readCalled = true;
       const notes = [];
+      if (!scheduledTask) {
+        refreshQzonePermissions();
+        if (trigger?.trust !== "OWNER" && (context.allowQzoneFeed || context.allowQzonePost)) {
+          notes.push(`本轮已读取 OWNER 的当前动态请求：${[
+            context.allowQzoneFeed ? "read_qzone_feeds、engage_qzone_feed" : null,
+            context.allowQzonePost ? "post_qzone" : null
+          ].filter(Boolean).join("；")} 可由网关单独核验使用；群聊文件执行权限标签不限制这些 QQ 动态工具。`);
+        }
+      }
       if (firstBlockedMedia >= 0 && readable.length === 0) notes.push("有新图片在本轮启动后到达，尚未作为视觉输入提供；请结束本轮，图片和其后的消息会保留给下一轮。");
       else if (firstBlockedMedia >= 0) notes.push("后面还有新图片未作为视觉输入提供；请结束本轮，图片和其后的消息会保留给下一轮。");
       else if (fresh.length > readable.length) notes.push("还有未读取的消息；请再次调用 read_messages。");
       if (!readable.length && firstBlockedMedia < 0) notes.push("目前没有新消息；可以继续等待，也可以结束本轮。");
+      if (scheduledTask) notes.push("这是定时任务按需读取的当前会话消息；不会标记为已处理，也不会清理 pending。");
+      if (first) {
+        const own = (snapshot.sentMessages || []).filter((item) => !item.recalledAt).slice(-10)
+          .map(({ messageId, kind, summary }) => ({ messageId, kind, summary }));
+        if (own.length) notes.push(`当前会话最近由你成功发出的消息（仅这些可撤回）：${JSON.stringify(own)}`);
+      }
       return answer([output, ...notes].filter(Boolean).join("\n\n"));
     }
+    if (name === "recall_message") {
+      if (!context.readCalled) return answer("请先调用 read_messages 确认当前会话。", true);
+      const messageId = String(args.message_id || "").trim();
+      if (!/^-?\d+$/u.test(messageId) || !store.getSentMessage(targetId, messageId)) {
+        return answer("只能撤回当前会话中由老代成功发出、尚未撤回的消息 ID。", true);
+      }
+      try {
+        store.assertReplyEnabled(targetId);
+        const result = await oneBot.deleteMessage(messageId);
+        if (!result?.ok) throw new Error("QQ 未确认撤回成功");
+        await store.markSentMessageRecalled(targetId, messageId);
+        context.actionCount += 1;
+        context.displayedActions.push(`[已撤回消息 ${messageId}]`);
+        try { active.onDelta?.("", context.displayedActions.join("\n\n")); } catch { /* recall already succeeded */ }
+        return answer(`消息 ${messageId} 已从 QQ 撤回。`);
+      } catch (error) {
+        context.failed = true;
+        return answer(`撤回状态未能确认：${error.message}。不要立即重复操作。`, true);
+      }
+    }
+    if (name === "read_qzone_feeds" || name === "engage_qzone_feed") {
+      if (!scheduledTask && !context.readCalled) return answer("请先读取当前 QQ 会话消息。", true);
+      refreshQzonePermissions();
+      if (!context.allowQzoneFeed || !qzone) return answer("好友动态仅限 OWNER 本轮真实消息明确要求，或 OWNER 直接唤醒的可写会话。", true);
+      try {
+        store.assertReplyEnabled(targetId);
+        if (name === "read_qzone_feeds") {
+          const page = scheduledTask
+          ? await qzoneActions.readFeeds({ pageNum: args.page_num ?? 1, count: args.count ?? 12 })
+            : await qzone.readManualFeeds({ targetType, targetId, messages: currentQzoneMessages(),
+              trigger, pageNum: args.page_num ?? 1, count: args.count ?? 12 });
+          if (page.pageNum > 1 && page.feeds.length && page.feeds.every((feed) => qzoneFeeds.has(feed.id))) {
+            return answer("SnowLuma 这一页与已读动态完全重复，深翻页暂不可用；未推进定时巡检断点。", true);
+          }
+          for (const feed of page.feeds) qzoneFeeds.set(feed.id, feed);
+          if (scheduledTask) context.qzoneReadCalled = true;
+          return answer(JSON.stringify({ pageNum: page.pageNum, hasMore: page.hasMore,
+            note: scheduledTask ? "仅可操作本轮真实读到的动态；聊天 pending 不会因本次读取而清理。"
+              : "仅当前轮可点赞或评论这些真实动态；普通翻阅不推进定时巡检断点。第 2 页以后可能不可靠。",
+            feeds: page.feeds.map(({ uin, tid, nickname, timeMs, text }) => ({ uin, tid, nickname,
+              time: new Date(timeMs).toISOString(), text })) }));
+        }
+        const feed = qzoneFeeds.get(`${String(args.uin || "")}:${String(args.tid || "")}`);
+        if (!feed) return answer("只能操作本轮 read_qzone_feeds 真正读到的动态，不能猜测 uin 或 tid。", true);
+        const result = scheduledTask
+          ? await qzoneActions.engageFeed({ feed, type: args.type, content: args.content })
+          : await qzone.engageManualFeed({ targetType, targetId, messages: currentQzoneMessages(),
+            trigger, feed, type: args.type, content: args.content });
+        if (result.status === "unavailable") return answer("这条动态已删除或无法访问，网关已记下，不会再对它重复点赞或评论。");
+        if (result.status !== "done") return answer(`这条动态的同类操作此前已尝试（${result.priorStatus}），本轮不重复发送；请在 QQ 空间核对。`);
+        const summary = `[QQ 空间${result.action === "like" ? "已点赞" : "已评论"}：${result.uin}/${result.tid}]`;
+        if (!scheduledTask) await store.recordLiveActionSent(targetId, { kind: "qzone_engagement", summary,
+          observedSequence: context.lastReadSequence, chatReply: false });
+        context.actionCount += 1;
+        context.qzoneActionCount += 1;
+        context.displayedActions.push(summary);
+        try { active?.onDelta?.("", context.displayedActions.join("\n\n")); } catch { /* confirmed action already persisted */ }
+        return answer(`${summary}，QQ 已确认执行。`);
+      } catch (error) {
+        if (name === "engage_qzone_feed" && error.code !== "QZONE_DENIED") context.failed = true;
+        return answer(`好友动态操作未执行或状态未能确认：${error.message}${context.failed ? "。请停止本轮，不要盲目重试。" : ""}`, true);
+      }
+    }
+    if (name === "get_group_management" || name === "manage_group") {
+      if (targetType !== "group") return answer("群管理工具仅限当前可写群聊。", true);
+      if (scheduledTask && name === "manage_group") return answer("定时动态任务不能代替 OWNER 的当前聊天授权执行群管理；请等待相应 QQ 聊天轮次。", true);
+      if (!context.readCalled) return answer("请先读取当前群消息，再使用群管理工具。", true);
+      try {
+        store.assertReplyEnabled(targetId);
+        if (name === "get_group_management") {
+          const result = await readGroupManagement({ oneBot, groupId: targetId, botId: AGENT_QQ_ID, args });
+          return answer(JSON.stringify(result));
+        }
+        const ownerMessage = currentOwnerManagementMessage(messageReader, targetId, OWNER_QQ_ID,
+          (messageId) => store.isRecalled?.(targetId, messageId));
+        const actionKey = createHash("sha256").update(JSON.stringify(args)).digest("hex").slice(0, 16);
+        const alreadyDone = (store.snapshot(targetId).liveSession?.actions || []).some((item) =>
+          item.kind === "group_management" && Number(item.observedSequence) === context.lastReadSequence
+          && String(item.summary).startsWith(`[${actionKey}] `));
+        if (alreadyDone) return answer("这项完全相同的群管理操作在此前中断的轮次里已由 QQ 确认执行，本轮不重复操作。");
+        const result = await manageGroup({
+          oneBot, groupId: targetId, botId: AGENT_QQ_ID, ownerId: OWNER_QQ_ID,
+          ownerMessage, messageReader, args
+        });
+        await store.recordLiveActionSent(targetId, {
+          kind: "group_management", summary: `[${actionKey}] ${result.summary}`,
+          observedSequence: context.lastReadSequence, chatReply: false
+        });
+        context.actionCount += 1;
+        context.managementActionCount += 1;
+        context.displayedActions.push(`[群管理：${result.summary}]`);
+        try { onEvent({ type: "group-management", groupId: targetId, action: result.action,
+          summary: result.summary, ownerAuthorized: Boolean(ownerMessage), at: new Date().toISOString() }); }
+        catch { /* successful QQ action and durable receipt take precedence over event display */ }
+        try { active?.onDelta?.("", context.displayedActions.join("\n\n")); } catch { /* action already succeeded */ }
+        return answer(`${result.summary}。QQ 已确认执行。`);
+      } catch (error) {
+        if (name === "manage_group" && error.code !== "GROUP_MANAGEMENT_DENIED") context.failed = true;
+        return answer(`群管理操作未执行或状态未能确认：${error.message}${context.failed ? "。请停止本轮，不要盲目重试。" : ""}`, true);
+      }
+    }
+    if (name === "post_qzone") refreshQzonePermissions();
     const queued = [];
     const validated = handleQqMcpTool({ name, args, context, queued });
     if (validated.isError || !queued.length) return validated;
@@ -150,8 +326,7 @@ export function createLiveConversationTools({
         if (recoveredMessages.includes(`${context.lastReadSequence}:${summary.slice(0, 500)}`)) {
           return answer("这条文字在先前中断的轮次里已确认送达 QQ，本轮不重复发送。可继续读取消息或结束对话。");
         }
-        const replyToMessageId = !store.snapshot(targetId).liveSession?.actions?.some((item) => item.kind === "message")
-          && trigger?.reason === "mention" ? trigger.messageId : null;
+        const replyToMessageId = action.replyToMessageId;
         if (active?.cancelRequested || !canRun()) return answer("本轮已停止或回复开关已关闭。", true);
         sent = targetType === "group" && segments
           ? await oneBot.sendGroupSegments(targetId, [
@@ -162,7 +337,7 @@ export function createLiveConversationTools({
           ? await oneBot.sendGroupMessage(targetId, summary, {
               replyToMessageId
             })
-          : await oneBot.sendPrivateMessage(targetId, summary);
+          : await oneBot.sendPrivateMessage(targetId, summary, { replyToMessageId });
       } else if (action.kind === "face") {
         summary = `[QQ 表情：${args.face}]`;
         sent = targetType === "group"
@@ -190,12 +365,15 @@ export function createLiveConversationTools({
         sent = await fileManager.sendImage(targetType, targetId, image);
       } else if (action.kind === "qzone") {
         if (!qzone) throw new Error("QQ 空间不可用");
-        const result = await qzone.executeManual({
-          targetType, targetId, trigger, messages: triggerMessages,
-          turnId: active.turnId, text: action.directive, allowAutonomousOwnerPost: true
-        });
-        if (!result.notices?.some((notice) => notice.startsWith("已用老代的小号发布"))) {
-          throw new Error(result.notices?.join("；") || "QQ 空间发布未确认");
+        if (scheduledTask) await qzoneActions.post({ content: args.content, images: args.images });
+        else {
+          const result = await qzone.executeManual({
+            targetType, targetId, trigger, messages: currentQzoneMessages(),
+            turnId: active.turnId, text: action.directive, allowAutonomousOwnerPost: true
+          });
+          if (!result.notices?.some((notice) => notice.startsWith("已用老代的小号发布"))) {
+            throw new Error(result.notices?.join("；") || "QQ 空间发布未确认");
+          }
         }
         summary = "[已发布 QQ 空间动态]";
         chatReply = false;
@@ -204,13 +382,15 @@ export function createLiveConversationTools({
         return answer("未知的 QQ 动作。", true);
       }
       if (!sent?.ok) throw new Error(`QQ ${action.kind} 发送失败：HTTP ${sent?.status || "unknown"}`);
-      await store.recordLiveActionSent(targetId, {
-        kind: action.kind, summary, observedSequence: context.lastReadSequence, chatReply
-      });
+      const receipt = { kind: action.kind, summary, chatReply,
+        messageId: sent.body?.data?.message_id ?? sent.body?.data?.messageId ?? null };
+      if (scheduledTask) await store.recordStandaloneActionSent(targetId, receipt);
+      else await store.recordLiveActionSent(targetId, { ...receipt, observedSequence: context.lastReadSequence });
       context.actionCount += 1;
       context.displayedActions.push(summary);
       try { active.onDelta?.(summary, context.displayedActions.join("\n\n")); } catch { /* QQ delivery already succeeded. */ }
-      return answer(`${summary} 已成功交给 QQ。可以继续读取或回复；结束时调用 end_conversation。`);
+      const sentId = sent.body?.data?.message_id ?? sent.body?.data?.messageId;
+      return answer(`${summary} 已成功交给 QQ${sentId == null ? "" : `，消息 ID：${sentId}`}。可以继续读取或回复；结束时调用 end_conversation。`);
     } catch (error) {
       context.failed = true;
       return answer(`本轮动作未能确认：${error.message}。请结束本轮，不要立即重试；待处理消息保持不变。`, true);

@@ -203,13 +203,13 @@ test("agent identity is bootstrapped once while ordinary turns stay compact", ()
   });
   assert.match(bootstrap, new RegExp(`你的名称是“老代”.*${AGENT_QQ_ID}`));
   assert.match(bootstrap, /qq_gateway\.read_messages/);
-  assert.match(bootstrap, /文字、文件、图片、内置表情、收藏表情包和群戳一戳都是并列的回复方式/);
-  assert.match(bootstrap, /可以只发文字、只发文件或图片、只发表情或表情包、只戳一戳/);
-  assert.match(bootstrap, /不要固定成“每段文字后跟一个表情”/);
+  assert.match(bootstrap, /文字、文件、图片、内置\/收藏表情和群戳一戳可任选或组合/);
+  assert.match(bootstrap, /可任选或组合，不强制附文字/);
+  assert.match(bootstrap, /最终文字不会代发/);
   assert.match(bootstrap, /\[\[qq_file:\/绝对路径\]\]/);
   assert.match(bootstrap, /\[\[qq_poke:sender\]\]/);
   assert.match(bootstrap, /\[\[qq_poke:QQ号\]\]/);
-  assert.match(bootstrap, /不得猜测 QQ 号，也不能跨群戳人/);
+  assert.match(bootstrap, /不得猜 QQ 号或跨群戳人/);
   assert.doesNotMatch(ordinary, /你的名称是“老代”/);
   assert.match(ordinary, /本轮真实清单/);
   assert.match(ordinary, /st_abcdef123456=适合觉得好笑时使用/);
@@ -287,9 +287,13 @@ test("WorkBuddy Agent group final text never sends without the MCP send_message 
   const sent = [];
   const codex = new FakeCodex();
   codex.supportsQqMcp = true;
-  codex.runTurn = async ({ qqToolContext }) => {
-    const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "group-final-only" });
-    assert.match(read.content[0].text, /只读后沉默/);
+  let runs = 0;
+  codex.runTurn = async ({ qqToolContext, prompt }) => {
+    runs += 1;
+    if (runs === 1) {
+      const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "group-final-only" });
+      assert.match(read.content[0].text, /只读后沉默/);
+    } else assert.match(prompt, /send_message/);
     return { text: "这只是最终文字，不应发到 QQ。", turnId: "group-final-only", compacted: false };
   };
   const worker = createWorker({
@@ -299,9 +303,39 @@ test("WorkBuddy Agent group final text never sends without the MCP send_message 
   const pending = await fixture.store.appendMessage(message("123", "group-final-only", "只读后沉默", { mentionedBot: true }));
   await fixture.store.requestTrigger("123", "mention", pending);
   await worker.kick("123");
+  assert.equal(runs, 2);
   assert.deepEqual(sent, []);
   assert.deepEqual(fixture.store.snapshot("123").pendingMessages.map((item) => item.messageId), ["group-final-only"]);
   assert.equal(fixture.store.snapshot("123").lastCompletedReply, null);
+});
+
+test("WorkBuddy Agent can recover an unsent final answer by calling MCP on the next turn", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  const sent = [];
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  let runs = 0;
+  codex.runTurn = async ({ qqToolContext, prompt, prefetchQqMessages }) => {
+    runs += 1;
+    if (runs === 1) {
+      await qqToolContext.liveTool("read_messages", {}, { turnId: "first" });
+      return { text: "这句尚未发送", turnId: "first", compacted: false };
+    }
+    assert.match(prompt, /send_message/);
+    assert.equal(prefetchQqMessages, false);
+    assert.equal((await qqToolContext.liveTool("send_message", { text: "现在通过工具发送" }, { turnId: "second" })).isError, false);
+    return { text: "", turnId: "second", compacted: false };
+  };
+  const worker = createWorker({
+    store: fixture.store, codex,
+    oneBot: { async sendGroupMessage(_id, text) { sent.push(text); return { ok: true, status: 200 }; } }
+  });
+  const pending = await fixture.store.appendMessage(message("123", "recover-final-only", "老代回复一下", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  await worker.kick("123");
+  assert.equal(runs, 2);
+  assert.deepEqual(sent, ["现在通过工具发送"]);
+  assert.equal(fixture.store.snapshot("123").pendingMessages.length, 0);
 });
 
 test("WorkBuddy keeps shared persona in its system prompt without a per-turn persona block", async (t) => {
@@ -443,6 +477,122 @@ test("a whole multi-batch QQ Space scan holds its conversation while incoming ch
   assert.equal(fixture.store.snapshot("123").pendingMessages.length, 0);
 });
 
+test("chat, scheduled post and feed scan use separate turns in activation order", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  let startChat;
+  let finishChat;
+  const chatStarted = new Promise((resolve) => { startChat = resolve; });
+  const chatGate = new Promise((resolve) => { finishChat = resolve; });
+  const turns = [];
+  const codex = {
+    startThread: async () => "same-thread",
+    resumeThread: async () => {},
+    runTurn: async ({ prompt }) => {
+      if (prompt.includes("scheduled-post-only")) turns.push("post");
+      else if (prompt.includes("scheduled-feed-only")) turns.push("feed");
+      else {
+        turns.push("chat");
+        if (turns.length === 1) {
+          startChat();
+          await chatGate;
+        }
+      }
+      return { text: "收到。", turnId: `turn-${turns.length}` };
+    }
+  };
+  const worker = createWorker({ store: fixture.store, codex,
+    oneBot: { sendGroupMessage: async () => ({ ok: true, status: 200 }) } });
+  const first = await fixture.store.appendMessage(message("123", "first", "老代，先回复我", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", first);
+  const chat = worker.kick("123");
+  await chatStarted;
+  const scheduled = worker.runQzoneSequence("123", async (runTurn) => {
+    await runTurn("scheduled-post-only", { trigger: "qzone-post" });
+    await runTurn("scheduled-feed-only", { trigger: "qzone-feed" });
+  });
+  const later = await fixture.store.appendMessage(message("123", "later", "老代，后来这条", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", later);
+  worker.kick("123");
+  finishChat();
+  await chat;
+  await scheduled;
+  for (let attempt = 0; attempt < 100 && fixture.store.snapshot("123").pendingMessages.length; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(turns, ["chat", "post", "feed", "chat"]);
+  assert.equal(fixture.store.snapshot("123").pendingMessages.length, 0);
+});
+
+test("an idle two-minute chat followup yields immediately to an activated Space task", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  await fixture.store.setCodexConfig("123", { workingMode: "agent", permissionMode: "dangerFullAccess" });
+  let enabled = true;
+  const turns = [];
+  const worker = createWorker({ store: fixture.store, canRun: () => enabled,
+    codex: {
+      supportsQqMcp: true,
+      startThread: async () => "same-thread",
+      resumeThread: async () => {},
+      runTurn: async ({ prompt, qqToolContext }) => {
+        const scheduled = prompt.includes("scheduled-space-only");
+        turns.push(scheduled ? "space" : "chat");
+        if (!scheduled) {
+          await qqToolContext.liveTool("read_messages", {}, { onDelta() {} });
+          await qqToolContext.liveTool("end_conversation", {}, { onDelta() {} });
+        }
+        return { text: "", turnId: `turn-${turns.length}` };
+      }
+    },
+    oneBot: { sendGroupMessage: async () => ({ ok: true, status: 200 }) } });
+  worker.followup.durationMs = 5_000;
+  const pending = await fixture.store.appendMessage(message("123", "first", "老代？", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  const chat = worker.kick("123");
+  for (let attempt = 0; attempt < 100 && !fixture.store.snapshot("123").replyFollowup; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(fixture.store.snapshot("123").replyFollowup);
+  try {
+    await Promise.race([
+      worker.runQzoneSequence("123", (runTurn) => runTurn("scheduled-space-only")),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Space task waited for the full chat followup")), 500))
+    ]);
+    assert.deepEqual(turns, ["chat", "space"]);
+  } finally {
+    enabled = false;
+    await worker.followup.cancel("123");
+    await chat;
+    await worker.running.get("123")?.catch(() => {});
+  }
+});
+
+test("a chat already waiting for sticker admission keeps its place before Space work", async (t) => {
+  const fixture = await createStoreFixture(t, ["123"]);
+  const turns = [];
+  let releaseSticker;
+  let committing = true;
+  const stickerGate = new Promise((resolve) => { releaseSticker = resolve; });
+  const worker = createWorker({ store: fixture.store,
+    codex: {
+      startThread: async () => "same-thread",
+      resumeThread: async () => {},
+      runTurn: async ({ prompt }) => {
+        turns.push(prompt.includes("scheduled-space-only") ? "space" : "chat");
+        return { text: "收到。", turnId: `turn-${turns.length}` };
+      }
+    },
+    oneBot: { sendGroupMessage: async () => ({ ok: true, status: 200 }) } });
+  worker.stickerLabels.waitForCommit = () => committing ? stickerGate : null;
+  const pending = await fixture.store.appendMessage(message("123", "first", "老代？", { mentionedBot: true }));
+  await fixture.store.requestTrigger("123", "mention", pending);
+  const chat = worker.kick("123");
+  const scheduled = worker.runQzoneSequence("123", (runTurn) => runTurn("scheduled-space-only"));
+  committing = false;
+  releaseSticker();
+  await Promise.all([chat, scheduled]);
+  assert.deepEqual(turns, ["chat", "space"]);
+});
+
 test("a failed QQ Space scan releases the queued group conversation", async (t) => {
   const fixture = await createStoreFixture(t, ["123"]);
   await fixture.store.setCodexConfig("123", { workingMode: "ask", permissionMode: "readOnly" });
@@ -482,7 +632,7 @@ test("an older fixed-instruction revision refreshes once without replacing the t
   }));
   await fixture.store.requestTrigger("123", "mention", pending);
   await worker.kick("123");
-  assert.match(codex.lastRun.prompt, /文字、文件、图片、内置表情、收藏表情包和群戳一戳都是并列的回复方式/);
+  assert.match(codex.lastRun.prompt, /文字、文件、图片、内置\/收藏表情和群戳一戳可任选或组合/);
   assert.equal(codex.startCalls, 0);
   assert.equal(fixture.store.snapshot("123").threadId, "thread-persistent");
   assert.equal(fixture.store.snapshot("123").bootstrapRevision, THREAD_INSTRUCTIONS_REVISION);
@@ -1949,7 +2099,7 @@ test("prompt carries identity labels and group members receive a risk-scoped Age
   const prompt = buildTurnPrompt([untrusted], { includeBaseInstructions: true, trigger, security });
   assert.match(prompt, /\(999\) \[UNTRUSTED\]/);
   assert.match(prompt, /图片文字/);
-  assert.match(prompt, /仍可正常聊天并按本轮权限使用 Agent/);
+  assert.match(prompt, /可正常聊天但不能授权高风险操作/);
   assert.match(prompt, /仅可在本群共享工作区/);
   assert.equal(security.cwd, workspaceDir);
   assert.deepEqual(security.allowedFileRoots, [workspaceDir]);

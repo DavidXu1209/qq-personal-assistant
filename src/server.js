@@ -639,6 +639,9 @@ async function handleApi(req, res, url) {
 
 async function handleOneBotEvent(payload) {
   if (isGroupPokeEvent(payload)) return handleGroupPoke(payload);
+  if (payload?.post_type === "notice" && ["group_recall", "friend_recall"].includes(payload?.notice_type)) {
+    return handleMessageRecall(payload);
+  }
   if (payload?.post_type !== "message" || !["group", "private"].includes(payload?.message_type)) {
     return { ignored: true, reason: "Only QQ group and private messages are handled" };
   }
@@ -647,10 +650,13 @@ async function handleOneBotEvent(payload) {
   const message = normalizeOneBotGroupMessage(payload);
   const isSource = subscriptionStore.sourceGroupIds().includes(message.groupId);
   if (!isSource && !allowedGroups.includes(message.groupId)) return { status: "ignored", reason: "Group is not managed" };
+  if (isSource ? subscriptionStore.isSourceRecalled(message.groupId, message.messageId)
+    : store.isRecalled(message.groupId, message.messageId)) return { status: "ignored", reason: "Message was recalled" };
   if (rememberMessage(`group:${message.messageId}`)) return { status: "ok", duplicate: true };
   await hydrateMessage(payload, message);
   if (isSource) {
     const result = await subscriptionStore.appendSourceMessage(message);
+    if (result.recalled || result.duplicate) return { status: "ignored", reason: "Source message was recalled or duplicated" };
     await mediaManager.removeMessages(result.removedMessages);
     recordEvent({ type: "source-message", sourceGroupId: message.groupId, message: result.message, at: new Date().toISOString() });
     await checkSubscriptionSchedule();
@@ -668,6 +674,7 @@ async function handleOneBotEvent(payload) {
     });
   }
   const stored = await store.appendMessage(message);
+  if (!stored) return { status: "ignored", reason: "Message was recalled" };
   await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
   recordEvent({ type: "message", groupId: stored.groupId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
@@ -681,6 +688,61 @@ async function handleOneBotEvent(payload) {
   }
   const group = store.snapshot(stored.groupId);
   return { status: "accepted", groupId: stored.groupId, messageId: stored.messageId, pendingMessages: group.pendingMessages.length, trigger: group.pendingTrigger?.reason || null };
+}
+
+async function handleMessageRecall(payload) {
+  const messageId = String(payload.message_id || "");
+  if (!/^-?\d+$/u.test(messageId)) return { status: "ignored", reason: "Invalid recall message ID" };
+  const now = new Date().toISOString();
+  if (payload.notice_type === "group_recall") {
+    const groupId = String(payload.group_id || "");
+    const isSource = subscriptionStore.sourceGroupIds().includes(groupId);
+    if (!isSource && !allowedGroups.includes(groupId)) return { status: "ignored", reason: "Group is not managed" };
+    if (String(payload.user_id || "") === String(payload.self_id || AGENT_QQ_ID) && !isSource) {
+      const changed = await store.markSentMessageRecalled(groupId, messageId);
+      if (changed) recordEvent({ type: "own-message-recalled", groupId, messageId, at: now });
+      return { status: "accepted", groupId, messageId, ownMessage: true };
+    }
+    if (isSource) {
+      const result = await subscriptionStore.recallSourceMessage(groupId, messageId);
+      await Promise.all(result.activeTargets.map(async (key) => {
+        const separator = key.indexOf(":");
+        await (key.slice(0, separator) === "private" ? privateStore : store)
+          .invalidateActiveWorkForRecall(key.slice(separator + 1));
+      }));
+      await mediaManager.removeMessages(result.removedMessages);
+      await mediaManager.removeImages(result.removedImages);
+      recordEvent({ type: "source-message-recalled", sourceGroupId: groupId, messageId, at: now });
+      await Promise.allSettled(result.activeTargets.map(async (key) => {
+        const separator = key.indexOf(":");
+        const type = key.slice(0, separator);
+        const id = key.slice(separator + 1);
+        return type === "private" ? privateWorker.cancel(id) : worker.cancel(id);
+      }));
+      await checkSubscriptionSchedule();
+      return { status: "accepted", sourceGroupId: groupId, messageId, cancelledTargets: result.activeTargets };
+    }
+    const result = await store.recallMessage(groupId, messageId);
+    await dailyStyle.revokeMessage("group", groupId, messageId);
+    await mediaManager.removeMessages(result.removedMessages);
+    await mediaManager.removeImages(result.removedImages);
+    recordEvent({ type: "message-recalled", groupId, messageId, at: now });
+    if (result.wasProcessing) await worker.cancel(groupId);
+    await triggerManager.reconsiderPending(groupId);
+    return { status: "accepted", groupId, messageId };
+  }
+  const userId = String(payload.user_id || "");
+  if (!userId || !privateStore.listGroups().some((item) => item.groupId === userId)) {
+    return { status: "ignored", reason: "Private Agent chat is not configured" };
+  }
+  const result = await privateStore.recallMessage(userId, messageId);
+  await dailyStyle.revokeMessage("private", userId, messageId);
+  await mediaManager.removeMessages(result.removedMessages);
+  await mediaManager.removeImages(result.removedImages);
+  recordEvent({ type: "private-message-recalled", userId, messageId, at: now });
+  if (result.wasProcessing) await privateWorker.cancel(userId);
+  await privateTriggerManager.reconsiderPending(userId);
+  return { status: "accepted", userId, messageId };
 }
 
 function isGroupPokeEvent(payload) {
@@ -732,6 +794,7 @@ async function handlePrivateMessage(payload) {
   const known = privateStore.listGroups().some((item) => item.groupId === message.senderId);
   if (!known && message.senderId !== OWNER_QQ_ID) return { status: "ignored", reason: "Private Agent chat is not configured" };
   if (rememberMessage(`private:${message.messageId}`)) return { status: "ok", duplicate: true };
+  if (known && privateStore.isRecalled(message.senderId, message.messageId)) return { status: "ignored", reason: "Message was recalled" };
   message.mentionedBot = true;
   await hydrateMessage(payload, message);
   const collectedStickers = await stickerManager.collectFromMessage(message, {
@@ -748,6 +811,7 @@ async function handlePrivateMessage(payload) {
   await privateStore.addConversation(message.senderId);
   privateMetadata[message.senderId] ||= { displayName: message.senderName || null };
   const stored = await privateStore.appendMessage(message);
+  if (!stored) return { status: "ignored", reason: "Message was recalled" };
   await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
   recordEvent({ type: "private-message", userId: stored.senderId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
@@ -765,26 +829,51 @@ async function handlePrivateMessage(payload) {
 async function hydrateMessage(payload, message) {
   await hydrateMentionNames(payload, message);
   if (message.replyToMessageId) {
-    try {
-      const quotedPayload = await oneBot.getMessage(message.replyToMessageId);
-      if (quotedPayload) {
-        const quotedInput = { ...quotedPayload, post_type: "message", message_type: payload.message_type, group_id: quotedPayload.group_id ?? payload.group_id, self_id: payload.self_id, user_id: quotedPayload.user_id ?? quotedPayload.sender?.user_id };
-        const quoted = payload.message_type === "private" ? normalizeOneBotPrivateMessage(quotedInput) : normalizeOneBotGroupMessage(quotedInput);
-        await hydrateMentionNames(quotedInput, quoted);
-        message.quotedMessage = {
-          messageId: quoted.messageId, senderId: quoted.senderId, senderName: quoted.senderName, senderRole: quoted.senderRole,
-          timestamp: quoted.timestamp, displayTime: quoted.displayTime, text: quoted.text, trust: quoted.trust, attachments: quoted.attachments, links: quoted.links
-        };
-        message.imageRefs.push(...quoted.imageRefs.map((ref) => ({ ...ref, context: "quoted" })));
+    const quotedRecalled = payload.message_type === "private"
+      ? privateStore.isRecalled(message.groupId, message.replyToMessageId)
+      : (subscriptionStore.sourceGroupIds().includes(message.groupId)
+        ? subscriptionStore.isSourceRecalled(message.groupId, message.replyToMessageId)
+        : store.isRecalled(message.groupId, message.replyToMessageId));
+    if (quotedRecalled) message.quoteError = "被引用消息已撤回";
+    else {
+      const session = payload.message_type === "private" ? privateStore : store;
+      const local = subscriptionStore.sourceGroupIds().includes(message.groupId)
+        ? subscriptionStore.snapshot().sources[message.groupId]?.messages.find((item) => String(item.messageId) === message.replyToMessageId)
+        : findSessionQuote(session.snapshot(message.groupId), message.replyToMessageId);
+      if (local) message.quotedMessage = quotedSummary(local);
+      else try {
+        const quotedPayload = await oneBot.getMessage(message.replyToMessageId);
+        if (quotedPayload) {
+          const quotedInput = { ...quotedPayload, post_type: "message", message_type: payload.message_type, group_id: quotedPayload.group_id ?? payload.group_id, self_id: payload.self_id, user_id: quotedPayload.user_id ?? quotedPayload.sender?.user_id };
+          const quoted = payload.message_type === "private" ? normalizeOneBotPrivateMessage(quotedInput) : normalizeOneBotGroupMessage(quotedInput);
+          await hydrateMentionNames(quotedInput, quoted);
+          message.quotedMessage = quotedSummary(quoted);
+          message.imageRefs.push(...quoted.imageRefs.map((ref) => ({ ...ref, context: "quoted" })));
+        }
+      } catch (error) {
+        message.quoteError = String(error.message || error).slice(0, 500);
       }
-    } catch (error) {
-      message.quoteError = String(error.message || error).slice(0, 500);
     }
   }
   message.images = await mediaManager.cacheMessageImages(message, { resolveImageRef: (ref) => oneBot.resolveImageRef(ref) });
   message.attachments = await mediaManager.cacheMessageAttachments(message, {
     resolveAttachmentRef: payload.message_type === "group" ? (ref) => oneBot.resolveGroupFileRef(message.groupId, ref) : null
   });
+}
+
+function findSessionQuote(snapshot, messageId) {
+  const id = String(messageId);
+  return snapshot.pendingMessages.find((item) => String(item.messageId) === id)
+    || [...(snapshot.recentTurns || [])].reverse().flatMap((turn) => turn.messages || [])
+      .find((item) => String(item.messageId) === id);
+}
+
+function quotedSummary(quoted) {
+  return {
+    messageId: quoted.messageId, senderId: quoted.senderId, senderName: quoted.senderName, senderRole: quoted.senderRole,
+    timestamp: quoted.timestamp, displayTime: quoted.displayTime, text: quoted.text, trust: quoted.trust,
+    attachments: quoted.attachments, links: quoted.links
+  };
 }
 
 async function hydrateMentionNames(payload, message) {

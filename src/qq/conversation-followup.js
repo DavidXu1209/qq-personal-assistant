@@ -2,8 +2,8 @@ import { REPLY_FOLLOWUP_MS } from "../storage/session-store.js";
 
 /** Keeps the gateway worker alive without keeping a model request alive. */
 export class ConversationFollowup {
-  constructor({ store, canRun, blocked, setLive, onEvent, targetType, durationMs = REPLY_FOLLOWUP_MS }) {
-    Object.assign(this, { store, canRun, blocked, setLive, onEvent, targetType, durationMs });
+  constructor({ store, canRun, blocked, shouldYield = () => false, setLive, onEvent, targetType, durationMs = REPLY_FOLLOWUP_MS }) {
+    Object.assign(this, { store, canRun, blocked, shouldYield, setLive, onEvent, targetType, durationMs });
     this.cancelled = new Set();
   }
 
@@ -30,7 +30,7 @@ export class ConversationFollowup {
     if (!window) return false;
     this.publishWaiting(id);
     this.onEvent({ type: "conversation-waiting", targetType: this.targetType, targetId: String(id), waitUntil: window.expiresAt });
-    const shouldStop = () => this.cancelled.has(String(id)) || !this.canRun(id) || this.blocked()
+    const shouldStop = () => this.cancelled.has(String(id)) || !this.canRun(id) || this.blocked() || this.shouldYield(id)
       || !this.store.snapshot(id).replyFollowup || Boolean(this.store.snapshot(id).pendingTrigger)
       || this.store.clock().getTime() >= Date.parse(window.expiresAt);
     await this.store.waitForNewMessages(id, {
@@ -44,6 +44,10 @@ export class ConversationFollowup {
       return false;
     }
     if (this.blocked()) {
+      this.publishQueued(id);
+      return false;
+    }
+    if (this.shouldYield(id)) {
       this.publishQueued(id);
       return false;
     }

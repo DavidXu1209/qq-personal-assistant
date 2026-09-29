@@ -184,6 +184,14 @@ export class QqMediaManager {
     }
   }
 
+  async removeImages(images) {
+    for (const image of images || []) {
+      const path = image?.localPath;
+      if (!path || resolve(path) === this.rootDir || !this.isInsideRoot(path)) continue;
+      await rm(path, { force: true });
+    }
+  }
+
   async cleanupOrphans(referencedImages = []) {
     const referencedDirs = new Set(
       referencedImages

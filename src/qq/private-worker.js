@@ -9,6 +9,7 @@ import {
 } from "../security/policy.js";
 import { parseQqDeliveryDirectives } from "./file-directive.js";
 import { createLiveConversationTools } from "./live-conversation.js";
+import { runLiveTurnWithSendRecovery } from "./live-send-recovery.js";
 import { QqMessageReader } from "./message-reader.js";
 import { ConversationFollowup } from "./conversation-followup.js";
 import { StickerLabelCoordinator } from "./sticker-label-coordinator.js";
@@ -43,9 +44,12 @@ export class PrivateWorker {
     this.qzone = null;
     this.running = new Map();
     this.qzoneReservations = new Map();
+    this.waitingChat = new Map();
+    this.olderChatPermits = new Set();
     this.live = new Map();
     this.followup = new ConversationFollowup({ store, targetType: "private", durationMs: followupDurationMs,
       canRun: (id) => this.canRun(id), blocked: () => Boolean(this.taskGate?.blocked),
+      shouldYield: (id) => this.qzoneReservations.has(String(id)),
       setLive: (id, patch) => this.setLive(id, patch), onEvent });
     this.stickerLabels = new StickerLabelCoordinator({
       targetType: "private",
@@ -72,11 +76,25 @@ export class PrivateWorker {
     const id = String(userId);
     if (!this.canRun(id)) return Promise.resolve();
     if (this.store.rateLimitUntil(id) > Date.now()) return Promise.resolve();
-    if (this.qzoneReservations.has(id)) return this.qzoneReservations.get(id);
+    if (this.qzoneReservations.has(id) && !this.olderChatPermits.has(id)) return this.qzoneReservations.get(id);
     if (this.running.has(id)) return this.running.get(id);
-    if (this.taskGate?.blocked) return this.taskGate.wait().then(() => this.kick(id));
+    if (this.taskGate?.blocked) {
+      if (this.waitingChat.has(id)) return this.waitingChat.get(id);
+      const waiting = this.taskGate.wait().then(() => this.kick(id)).finally(() => {
+        if (this.waitingChat.get(id) === waiting) this.waitingChat.delete(id);
+      });
+      this.waitingChat.set(id, waiting);
+      return waiting;
+    }
     const stickerCommit = this.stickerLabels.waitForCommit(id);
-    if (stickerCommit) return stickerCommit.finally(() => this.kick(id));
+    if (stickerCommit) {
+      if (this.waitingChat.has(id)) return this.waitingChat.get(id);
+      const waiting = stickerCommit.finally(() => this.kick(id)).finally(() => {
+        if (this.waitingChat.get(id) === waiting) this.waitingChat.delete(id);
+      });
+      this.waitingChat.set(id, waiting);
+      return waiting;
+    }
     const release = this.taskGate?.tryEnter();
     this.followup.start(id);
     const run = this.runLoop(id).finally(() => {
@@ -103,7 +121,7 @@ export class PrivateWorker {
         if (this.store.snapshot(userId).replyFollowup) this.followup.publishQueued(userId);
         return;
       }
-      if (this.qzoneReservations.has(String(userId))) return;
+      if (this.qzoneReservations.has(String(userId)) && !this.olderChatPermits.delete(String(userId))) return;
       if (this.stickerLabels.hasCommitBarrier(userId)) {
         if (this.store.snapshot(userId).replyFollowup) this.followup.publishQueued(userId);
         return;
@@ -118,7 +136,13 @@ export class PrivateWorker {
         else if (work.kind === "delivery") await this.retryDelivery(userId, work);
         else await this.runAgent(userId, work);
       } catch (error) {
+        const recalled = this.store.snapshot(userId).processing?.invalidatedByRecall === true;
         await this.store.failWork(userId, error, error.delivery ? { delivery: error.delivery } : {});
+        if (recalled || error.code === "RECALLED_INPUT") {
+          this.setLive(userId, { status: "cancelled", error: null });
+          this.onEvent({ type: "private-recall-cancelled", userId, at: new Date().toISOString() });
+          return;
+        }
         if (this.store.snapshot(userId).replyEnabled === false || error.code === "REPLY_DISABLED") {
           this.setLive(userId, { status: "paused", error: null });
           return;
@@ -167,14 +191,21 @@ export class PrivateWorker {
 
   async runQzoneSequence(userId, task) {
     const id = String(userId);
-    if (this.taskGate?.blocked) { await this.taskGate.wait(); return this.runQzoneSequence(id, task); }
-    const releaseGate = this.taskGate?.tryEnter();
     const previous = this.qzoneReservations.get(id);
+    if (!previous && !this.running.has(id) && this.store.snapshot(id).pendingTrigger) this.kick(id);
+    const olderChat = previous ? null : this.waitingChat.get(id);
+    if (olderChat) this.olderChatPermits.add(id);
+    let releaseGate;
     let release;
     const reservation = new Promise((resolve) => { release = resolve; });
     this.qzoneReservations.set(id, reservation);
+    this.store.messageEvents?.emit(id);
     try {
       if (previous) await previous;
+      if (olderChat) await olderChat.catch(() => {});
+      if (this.taskGate) {
+        while (!(releaseGate = this.taskGate.tryEnter())) await this.taskGate.wait();
+      }
       const active = this.running.get(id);
       if (active) await active.catch(() => {});
       const committing = this.stickerLabels.waitForCommit(id);
@@ -184,9 +215,12 @@ export class PrivateWorker {
       return await task((prompt, { trigger = "qzone-feed", qqToolContext = null } = {}) =>
         this.performQzoneTurn(id, prompt, trigger, qqToolContext));
     } finally {
+      this.olderChatPermits.delete(id);
       if (this.qzoneReservations.get(id) === reservation) {
         this.qzoneReservations.delete(id);
-        if (this.canRun(id) && this.store.snapshot(id).pendingTrigger) queueMicrotask(() => this.kick(id));
+        if (this.canRun(id) && (this.store.snapshot(id).pendingTrigger || this.store.snapshot(id).replyFollowup)) {
+          queueMicrotask(() => this.kick(id));
+        }
       }
       release();
       releaseGate?.();
@@ -241,6 +275,24 @@ export class PrivateWorker {
       this.setLive(userId, { status: "error", threadId, trigger: null, text: "", error: error.message });
       throw error;
     }
+  }
+
+  createScheduledToolContext(userId, qzoneActions) {
+    const conversation = this.store.snapshot(userId);
+    const trigger = { reason: "qzone_scheduled", trust: "SYSTEM" };
+    const security = constrainConversationSecurity(privateSandbox(userId, trigger), optionsForConversation(conversation));
+    return createLiveConversationTools({
+      store: this.store, targetId: userId, targetType: "private", oneBot: this.oneBot,
+      fileManager: this.fileManager, stickerManager: this.stickerManager, qzone: this.qzone,
+      trigger, triggerMessages: [], security, scheduledTask: true, qzoneActions,
+      initialImageSequence: Number(conversation.pendingMessages.at(-1)?.sequence || 0),
+      stickers: this.stickerManager?.promptCatalog() || [],
+      canRun: () => this.canRun(userId), onEvent: this.onEvent,
+      renderMessages: (messages, { snapshot }) => buildPrivateTurnPrompt(messages, [], {
+        userId, displayName: this.targetNameResolver(userId), security,
+        includeResponseInstruction: false, activeMessages: snapshot.pendingMessages
+      })
+    });
   }
 
   labelStickers(userId, messages) {
@@ -322,7 +374,7 @@ export class PrivateWorker {
           prompt += `\n\n${section}`;
           extraReadSections.push(section);
         }
-        const feedContext = await this.qzone.manualFeedContext(work.messages, "private", userId, work.trigger).catch((error) => `【好友动态读取失败】${error.message}`);
+        const feedContext = useMcpRead ? "" : await this.qzone.manualFeedContext(work.messages, "private", userId, work.trigger).catch((error) => `【好友动态读取失败】${error.message}`);
         if (feedContext) {
           prompt += `\n\n${feedContext}`;
           extraReadSections.push(feedContext);
@@ -359,7 +411,8 @@ export class PrivateWorker {
         renderMessages: (messages, { first, snapshot }) => [
           buildPrivateTurnPrompt(messages, first ? contexts : [], {
             userId, displayName: this.targetNameResolver(userId), security,
-            includeBaseInstructions: false, includeResponseInstruction: false, stickerCatalog: []
+            includeBaseInstructions: false, includeResponseInstruction: false, stickerCatalog: [],
+            activeMessages: snapshot.pendingMessages
           }),
           ...(first ? extraReadSections : []),
           ...(first && snapshot.liveSession?.actions?.length
@@ -403,7 +456,11 @@ export class PrivateWorker {
         pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
         sourceReadContext: sourceViaMcp ? qqToolContext : null
       }) : null;
-      const result = autoTurn?.result || await this.codex.runTurn(turnRequest);
+      const result = autoTurn?.result || await runLiveTurnWithSendRecovery(
+        (request) => this.codex.runTurn(request), turnRequest, {
+          onRecovery: () => this.onEvent({ type: "private-send-tool-recovery", userId, threadId, at: new Date().toISOString() })
+        }
+      );
 
       this.store.assertReplyEnabled(userId);
       if (useMcpRead) {
@@ -419,7 +476,7 @@ export class PrivateWorker {
           turnId: result.turnId, trigger: work.trigger,
           bootstrapComplete: !result.compacted, bootstrapRevision: THREAD_INSTRUCTIONS_REVISION,
           lastReadSequence: qqToolContext.lastReadSequence,
-          consumeReadWithoutReply: silentScheduledCompletion
+          consumeReadWithoutReply: silentScheduledCompletion || qqToolContext.qzoneActionCount > 0
         });
         await this.mediaManager.removeMessages([...processed, ...removedSourceMessages]);
         this.followup.publishWaiting(userId, { threadId, turnId: result.turnId });
@@ -523,7 +580,7 @@ export class PrivateWorker {
     } catch (error) {
       if (error?.contextCompacted) await this.store.markBootstrapRequired(userId).catch(() => {});
       if (!deliveryPrepared && !claimsCompleted && this.subscriptionStore && contexts.length) {
-        if (this.store.snapshot(userId).replyEnabled === false || error.code === "REPLY_DISABLED") await this.subscriptionStore.releaseClaims(contexts).catch(() => {});
+        if (this.store.snapshot(userId).replyEnabled === false || this.store.snapshot(userId).processing?.invalidatedByRecall || ["REPLY_DISABLED", "RECALLED_INPUT"].includes(error.code)) await this.subscriptionStore.releaseClaims(contexts).catch(() => {});
         else await this.subscriptionStore.failClaims(contexts, error).catch(() => {});
       }
       throw error;

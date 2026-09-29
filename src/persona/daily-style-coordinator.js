@@ -110,6 +110,15 @@ export class DailyStyleCoordinator {
     return true;
   }
 
+  async revokeMessage(rawType, groupId, messageId) {
+    const id = `${rawType}:${groupId}:${messageId}`;
+    const before = this.state.samples.length;
+    this.state.samples = this.state.samples.filter((sample) => sample.id !== id);
+    this.state.recentIds = this.state.recentIds.filter((item) => item !== id);
+    if (this.state.samples.length !== before) await this.save();
+    return this.state.samples.length !== before;
+  }
+
   tick() {
     if (this.running) return this.running;
     if (!this.canRun()) return Promise.resolve();

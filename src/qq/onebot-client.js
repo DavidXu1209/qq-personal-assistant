@@ -48,11 +48,11 @@ export class OneBotClient {
     return Array.isArray(result.data) ? result.data : [];
   }
 
-  async getGroupMemberInfo(groupId, userId) {
+  async getGroupMemberInfo(groupId, userId, { noCache = false } = {}) {
     const result = await this.request("/get_group_member_info", {
       group_id: Number(groupId),
       user_id: Number(userId),
-      no_cache: false
+      no_cache: Boolean(noCache)
     }, { timeoutMs: 6000 });
     return result.data || null;
   }
@@ -68,6 +68,16 @@ export class OneBotClient {
   async getMessage(messageId) {
     const result = await this.request("/get_msg", { message_id: Number(messageId) });
     return result.data || null;
+  }
+
+  async deleteMessage(messageId) {
+    const id = String(messageId || "").trim();
+    if (!/^-?\d+$/u.test(id)) throw new Error("无效的 QQ 消息 ID");
+    const result = await this.request("/delete_msg", { message_id: Number(id) });
+    if (result.body?.retcode != null && Number(result.body.retcode) !== 0) {
+      throw new Error(result.body?.wording || `QQ 撤回失败：${result.body.retcode}`);
+    }
+    return { ok: true, status: result.status, body: result.body };
   }
 
   async getForwardMessages({ forwardId = null, messageId = null } = {}) {
@@ -165,8 +175,9 @@ export class OneBotClient {
     };
   }
 
-  async sendPrivateMessage(userId, text) {
+  async sendPrivateMessage(userId, text, { replyToMessageId = null } = {}) {
     return this.sendPrivateSegments(userId, [
+      ...(replyToMessageId == null ? [] : [{ type: "reply", data: { id: String(replyToMessageId) } }]),
       { type: "text", data: { text: String(text || "") } }
     ]);
   }

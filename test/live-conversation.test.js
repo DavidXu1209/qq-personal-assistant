@@ -107,6 +107,19 @@ test("the conversation cannot end before reading its pending messages", async (t
   assert.equal(context.ended, false);
 });
 
+test("ordinary chat explains scheduled Space tool misuse without consuming messages or blocking recovery", async (t) => {
+  const { context, active, store } = await fixture(t);
+  await context.liveTool("read_messages", {}, active);
+  const wrong = await context.liveTool("submit_qzone_decisions", { actions: [{ type: "comment" }] }, active);
+  assert.equal(wrong.isError, true);
+  assert.match(wrong.content[0].text, /用 read_qzone_feeds.*用 engage_qzone_feed/);
+  assert.match((await context.liveTool("read_qzone_feed_batch", {}, active)).content[0].text, /旧版动态读取工具已停用/);
+  assert.match((await context.liveTool("propose_qzone_post", { content: "测试" }, active)).content[0].text, /post_qzone/);
+  assert.equal(context.failed, false);
+  assert.equal(context.actionCount, 0);
+  assert.equal(store.snapshot("12345").pendingMessages.length, 1);
+});
+
 test("native QQ mentions preserve their original position and are not sent as plain text", async (t) => {
   const requests = [];
   const f = await fixture(t, {
@@ -120,11 +133,81 @@ test("native QQ mentions preserve their original position and are not sent as pl
   ] }, f.active);
   assert.equal(result.isError, false);
   assert.deepEqual(requests[0], [
-    { type: "reply", data: { id: "m1" } },
     { type: "text", data: { text: "看这里 " } }, { type: "at", data: { qq: "67890" } }, { type: "text", data: { text: " 你来一下" } }
   ]);
   assert.equal(f.store.snapshot("12345").pendingMessages.length, 1);
   assert.equal(f.context.actionCount, 1);
+});
+
+test("every text send independently chooses an explicit quote, never the wake message by default", async (t) => {
+  const sends = [];
+  const f = await fixture(t, {
+    sendGroupMessage: async (_group, text, options) => { sends.push({ text, options }); return { ok: true }; }
+  });
+  await f.append("321", "第二条");
+  await f.context.liveTool("read_messages", {}, f.active);
+  assert.equal((await f.context.liveTool("send_message", { text: "普通发言" }, f.active)).isError, false);
+  assert.equal((await f.context.liveTool("send_message", { text: "针对第二条", reply_to_message_id: "321" }, f.active)).isError, false);
+  assert.equal((await f.context.liveTool("send_message", { text: "又是普通发言" }, f.active)).isError, false);
+  assert.deepEqual(sends.map((item) => item.options.replyToMessageId), [null, "321", null]);
+  assert.equal((await f.context.liveTool("send_message", { text: "不能猜引用", reply_to_message_id: "999" }, f.active)).isError, true);
+  await f.store.recallMessage("12345", "321");
+  assert.equal((await f.context.liveTool("send_message", { text: "不能引已撤回", reply_to_message_id: "321" }, f.active)).isError, true);
+});
+
+test("recall_message only retracts confirmed self messages in this conversation and preserves pending if last reply is retracted", async (t) => {
+  const deleted = [];
+  const f = await fixture(t, {
+    sendGroupMessage: async () => ({ ok: true, body: { data: { message_id: 777 } } }),
+    deleteMessage: async (id) => { deleted.push(id); return { ok: true }; }
+  });
+  await f.context.liveTool("read_messages", {}, f.active);
+  assert.equal((await f.context.liveTool("recall_message", { message_id: "777" }, f.active)).isError, true);
+  const sent = await f.context.liveTool("send_message", { text: "可以撤回" }, f.active);
+  assert.match(sent.content[0].text, /777/);
+  assert.equal((await f.context.liveTool("recall_message", { message_id: "888" }, f.active)).isError, true);
+  assert.equal((await f.context.liveTool("recall_message", { message_id: "777" }, f.active)).isError, false);
+  assert.deepEqual(deleted, ["777"]);
+  assert.equal(f.store.getSentMessage("12345", "777"), null);
+  assert.equal((await f.context.liveTool("recall_message", { message_id: "777" }, f.active)).isError, true);
+  await f.context.liveTool("end_conversation", {}, f.active);
+  await f.store.completeLiveConversation("12345", { lastReadSequence: f.context.lastReadSequence });
+  assert.equal(f.store.snapshot("12345").pendingMessages.length, 1);
+  assert.equal(f.store.snapshot("12345").lastCompletedReply, null);
+});
+
+test("an incoming recall removes pending text, persists a tombstone and stops a turn that read it", async (t) => {
+  const f = await fixture(t);
+  await f.append("123", "随后撤回");
+  await f.context.liveTool("read_messages", {}, f.active);
+  const result = await f.store.recallMessage("12345", "123");
+  assert.equal(result.wasProcessing, true);
+  assert.deepEqual(f.store.snapshot("12345").pendingMessages.map((item) => item.messageId), ["m1"]);
+  assert.equal((await f.context.liveTool("send_message", { text: "不应继续" }, f.active)).isError, true);
+  assert.equal(await f.append("123", "延迟到达的副本"), null);
+  await f.store.failWork("12345", new Error("取消了含撤回消息的回复"));
+  assert.equal(f.store.snapshot("12345").lastError, null);
+  assert.equal(f.store.snapshot("12345").pendingTrigger, null);
+  const restarted = new SessionStore({ filePath: f.filePath });
+  await restarted.init({ allowedGroups: ["12345"] });
+  assert.equal(restarted.isRecalled("12345", "123"), true);
+});
+
+test("recalling a quoted message redacts its quoted text and image even when the original is no longer pending", async (t) => {
+  const f = await fixture(t);
+  await f.store.appendMessage({
+    groupId: "12345", messageId: "456", senderId: "67890", text: "引用说明", replyToMessageId: "123",
+    quotedMessage: { messageId: "123", text: "已撤回的内容" }, images: [{ context: "quoted", localPath: "/tmp/quote.jpg" }]
+  });
+  await f.context.liveTool("read_messages", {}, f.active);
+  await f.store.markLiveReadSequence("12345", f.store.snapshot("12345").pendingMessages.at(-1).sequence);
+  const recalled = await f.store.recallMessage("12345", "123");
+  assert.deepEqual(recalled.removedMessages, []);
+  assert.deepEqual(recalled.removedImages.map((image) => image.localPath), ["/tmp/quote.jpg"]);
+  assert.equal(recalled.wasProcessing, true);
+  const quoted = f.store.snapshot("12345").pendingMessages.find((item) => item.messageId === "456");
+  assert.equal(quoted.quotedMessage, null);
+  assert.deepEqual(quoted.images, []);
 });
 
 test("at-only replies work but unknown members, all, private mentions and unread calls are denied", async (t) => {

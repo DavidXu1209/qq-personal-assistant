@@ -14,6 +14,7 @@ import {
 } from "../security/policy.js";
 import { parseQqDeliveryDirectives } from "../qq/file-directive.js";
 import { createLiveConversationTools } from "../qq/live-conversation.js";
+import { runLiveTurnWithSendRecovery } from "../qq/live-send-recovery.js";
 import { QqMessageReader } from "../qq/message-reader.js";
 import { ConversationFollowup } from "../qq/conversation-followup.js";
 import { StickerLabelCoordinator } from "../qq/sticker-label-coordinator.js";
@@ -51,9 +52,12 @@ export class GroupWorker {
     this.qzone = null;
     this.running = new Map();
     this.qzoneReservations = new Map();
+    this.waitingChat = new Map();
+    this.olderChatPermits = new Set();
     this.live = new Map();
     this.followup = new ConversationFollowup({ store, targetType: "group", durationMs: followupDurationMs,
       canRun: (id) => this.canRun(id), blocked: () => Boolean(this.taskGate?.blocked),
+      shouldYield: (id) => this.qzoneReservations.has(String(id)),
       setLive: (id, patch) => this.setLive(id, patch), onEvent });
     this.stickerLabels = new StickerLabelCoordinator({
       targetType: "group",
@@ -76,11 +80,25 @@ export class GroupWorker {
     const id = String(groupId);
     if (!this.canRun(id)) return Promise.resolve();
     if (this.store.rateLimitUntil(id) > Date.now()) return Promise.resolve();
-    if (this.qzoneReservations.has(id)) return this.qzoneReservations.get(id);
+    if (this.qzoneReservations.has(id) && !this.olderChatPermits.has(id)) return this.qzoneReservations.get(id);
     if (this.running.has(id)) return this.running.get(id);
-    if (this.taskGate?.blocked) return this.taskGate.wait().then(() => this.kick(id));
+    if (this.taskGate?.blocked) {
+      if (this.waitingChat.has(id)) return this.waitingChat.get(id);
+      const waiting = this.taskGate.wait().then(() => this.kick(id)).finally(() => {
+        if (this.waitingChat.get(id) === waiting) this.waitingChat.delete(id);
+      });
+      this.waitingChat.set(id, waiting);
+      return waiting;
+    }
     const stickerCommit = this.stickerLabels.waitForCommit(id);
-    if (stickerCommit) return stickerCommit.finally(() => this.kick(id));
+    if (stickerCommit) {
+      if (this.waitingChat.has(id)) return this.waitingChat.get(id);
+      const waiting = stickerCommit.finally(() => this.kick(id)).finally(() => {
+        if (this.waitingChat.get(id) === waiting) this.waitingChat.delete(id);
+      });
+      this.waitingChat.set(id, waiting);
+      return waiting;
+    }
     const release = this.taskGate?.tryEnter();
     this.followup.start(id);
     const run = this.runLoop(id).finally(() => {
@@ -140,15 +158,22 @@ export class GroupWorker {
 
   async runQzoneSequence(groupId, task) {
     const id = String(groupId);
-    if (this.taskGate?.blocked) { await this.taskGate.wait(); return this.runQzoneSequence(id, task); }
-    const releaseGate = this.taskGate?.tryEnter();
     const previous = this.qzoneReservations.get(id);
+    if (!previous && !this.running.has(id) && this.store.snapshot(id).pendingTrigger) this.kick(id);
+    const olderChat = previous ? null : this.waitingChat.get(id);
+    if (olderChat) this.olderChatPermits.add(id);
+    let releaseGate;
     let release;
     const reservation = new Promise((resolve) => { release = resolve; });
-    // Reserve the entire feed scan before waiting for the current chat turn.
+    // Reserve at activation, including while maintenance holds the global gate.
     this.qzoneReservations.set(id, reservation);
+    this.store.messageEvents?.emit(id);
     try {
       if (previous) await previous;
+      if (olderChat) await olderChat.catch(() => {});
+      if (this.taskGate) {
+        while (!(releaseGate = this.taskGate.tryEnter())) await this.taskGate.wait();
+      }
       const active = this.running.get(id);
       if (active) await active.catch(() => {});
       const committing = this.stickerLabels.waitForCommit(id);
@@ -158,9 +183,12 @@ export class GroupWorker {
       return await task((prompt, { trigger = "qzone-feed", qqToolContext = null } = {}) =>
         this.performQzoneTurn(id, prompt, trigger, qqToolContext));
     } finally {
+      this.olderChatPermits.delete(id);
       if (this.qzoneReservations.get(id) === reservation) {
         this.qzoneReservations.delete(id);
-        if (this.canRun(id) && this.store.snapshot(id).pendingTrigger) queueMicrotask(() => this.kick(id));
+        if (this.canRun(id) && (this.store.snapshot(id).pendingTrigger || this.store.snapshot(id).replyFollowup)) {
+          queueMicrotask(() => this.kick(id));
+        }
       }
       release();
       releaseGate?.();
@@ -216,6 +244,25 @@ export class GroupWorker {
       this.setLive(groupId, { status: "error", threadId, trigger: null, text: "", error: error.message });
       throw error;
     }
+  }
+
+  createScheduledToolContext(groupId, qzoneActions) {
+    const group = this.store.snapshot(groupId);
+    const trigger = { reason: "qzone_scheduled", trust: "SYSTEM" };
+    const security = constrainConversationSecurity(
+      sandboxForTrigger(trigger, { workspaceDir: this.workspaceDirFor(groupId) }), optionsForConversation(group)
+    );
+    return createLiveConversationTools({
+      store: this.store, targetId: groupId, targetType: "group", oneBot: this.oneBot,
+      fileManager: this.fileManager, stickerManager: this.stickerManager, qzone: this.qzone,
+      trigger, triggerMessages: [], security, scheduledTask: true, qzoneActions,
+      initialImageSequence: Number(group.pendingMessages.at(-1)?.sequence || 0),
+      stickers: this.stickerManager?.promptCatalog() || [],
+      canRun: () => this.canRun(groupId), onEvent: this.onEvent,
+      renderMessages: (messages, { snapshot }) => buildTurnPrompt(messages, {
+        trigger, security, includeResponseInstruction: false, activeMessages: snapshot.pendingMessages
+      })
+    });
   }
 
   async runInstructionRefresh(groupId) {
@@ -302,7 +349,7 @@ export class GroupWorker {
         if (this.store.snapshot(groupId).replyFollowup) this.followup.publishQueued(groupId);
         return;
       }
-      if (this.qzoneReservations.has(String(groupId))) return;
+      if (this.qzoneReservations.has(String(groupId)) && !this.olderChatPermits.delete(String(groupId))) return;
       if (this.stickerLabels.hasCommitBarrier(groupId)) {
         if (this.store.snapshot(groupId).replyFollowup) this.followup.publishQueued(groupId);
         return;
@@ -317,7 +364,13 @@ export class GroupWorker {
         else if (work.kind === "delivery") await this.retryDelivery(groupId, work);
         else await this.runAgent(groupId, work);
       } catch (error) {
+        const recalled = this.store.snapshot(groupId).processing?.invalidatedByRecall === true;
         await this.store.failWork(groupId, error, error.delivery ? { delivery: error.delivery } : {});
+        if (recalled || error.code === "RECALLED_INPUT") {
+          this.setLive(groupId, { status: "cancelled", error: null });
+          this.onEvent({ type: "recall-cancelled", groupId, at: new Date().toISOString() });
+          return;
+        }
         if (this.store.snapshot(groupId).replyEnabled === false || error.code === "REPLY_DISABLED") {
           this.setLive(groupId, { status: "paused", error: null });
           return;
@@ -424,7 +477,7 @@ export class GroupWorker {
         prompt += `\n\n${section}`;
         extraReadSections.push(section);
       }
-      const feedContext = await this.qzone.manualFeedContext(work.messages, "group", groupId, work.trigger).catch((error) => `【好友动态读取失败】${error.message}`);
+      const feedContext = useMcpRead ? "" : await this.qzone.manualFeedContext(work.messages, "group", groupId, work.trigger).catch((error) => `【好友动态读取失败】${error.message}`);
       if (feedContext) {
         prompt += `\n\n${feedContext}`;
         extraReadSections.push(feedContext);
@@ -462,13 +515,15 @@ export class GroupWorker {
     } : useMcpRead ? createLiveConversationTools({
       store: this.store, targetId: groupId, targetType: "group", oneBot: this.oneBot,
       fileManager: this.fileManager, stickerManager: this.stickerManager, qzone: this.qzone,
+      onEvent: this.onEvent,
       canRun: () => this.canRun(groupId),
       trigger: work.trigger, triggerMessages: work.messages, security,
       initialImageSequence: Number(work.messages.at(-1)?.sequence || 0),
       pokeSenderId, allowedPokeUserIds, stickers: this.stickerManager?.promptCatalog() || [],
       readOnlyContextMessages: inputContexts.flatMap((context) => context.messages || []),
       renderMessages: (messages, { first, snapshot }) => [
-        buildTurnPrompt(messages, { trigger: work.trigger, security, stickerCatalog: [], includeResponseInstruction: false }),
+        buildTurnPrompt(messages, { trigger: work.trigger, security, stickerCatalog: [], includeResponseInstruction: false,
+          activeMessages: snapshot.pendingMessages }),
         ...(first ? extraReadSections : []),
         ...(first && snapshot.liveSession?.actions?.length
           ? [`【此前已送达 QQ、尚未清理的最近动作】${snapshot.liveSession.actions.slice(-8).map((item) => `${item.kind}: ${item.summary}`).join("；")}；不要重复发送。`]
@@ -522,7 +577,11 @@ export class GroupWorker {
       pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
       sourceReadContext: sourceViaMcp ? qqToolContext : null
     }) : null;
-    const result = autoTurn?.result || await this.codex.runTurn(turnRequest);
+    const result = autoTurn?.result || await runLiveTurnWithSendRecovery(
+      (request) => this.codex.runTurn(request), turnRequest, {
+        onRecovery: () => this.onEvent({ type: "send-tool-recovery", groupId, threadId, at: new Date().toISOString() })
+      }
+    );
     this.store.assertReplyEnabled(groupId);
     if (useMcpRead) {
       if (qqToolContext.failed) throw new Error("本轮 QQ 操作失败；待处理消息仍保留");
@@ -538,7 +597,7 @@ export class GroupWorker {
         turnId: result.turnId, trigger: work.trigger,
         bootstrapComplete: !result.compacted, bootstrapRevision: THREAD_INSTRUCTIONS_REVISION,
         lastReadSequence: qqToolContext.lastReadSequence,
-        consumeReadWithoutReply: silentScheduledCompletion
+        consumeReadWithoutReply: silentScheduledCompletion || qqToolContext.managementActionCount > 0 || qqToolContext.qzoneActionCount > 0
       });
       await this.mediaManager.removeMessages([...processed, ...removedSourceMessages]);
       this.followup.publishWaiting(groupId, { threadId, turnId: result.turnId });
@@ -651,7 +710,7 @@ export class GroupWorker {
       subscriptionConsumptions: subscriptionContexts,
       bootstrapComplete: !result.compacted,
       bootstrapRevision: THREAD_INSTRUCTIONS_REVISION,
-      replyToMessageId: work.trigger.reason === "mention" ? work.trigger.messageId : null
+      replyToMessageId: null
     });
     deliveryPrepared = true;
 
@@ -682,7 +741,7 @@ export class GroupWorker {
     } catch (error) {
       if (error?.contextCompacted) await this.store.markBootstrapRequired(groupId).catch(() => {});
       if (!deliveryPrepared && !claimsCompleted && this.subscriptionStore && subscriptionContexts.length) {
-        if (this.store.snapshot(groupId).replyEnabled === false || error.code === "REPLY_DISABLED") await this.subscriptionStore.releaseClaims(subscriptionContexts).catch(() => {});
+        if (this.store.snapshot(groupId).replyEnabled === false || this.store.snapshot(groupId).processing?.invalidatedByRecall || ["REPLY_DISABLED", "RECALLED_INPUT"].includes(error.code)) await this.subscriptionStore.releaseClaims(subscriptionContexts).catch(() => {});
         else await this.subscriptionStore.failClaims(subscriptionContexts, error).catch(() => {});
       }
       throw error;

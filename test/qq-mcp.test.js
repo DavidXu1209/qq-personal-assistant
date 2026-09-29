@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { handleQqMcpTool } from "../src/qq/mcp-actions.js";
 import { WorkBuddyClient } from "../src/workbuddy/client.js";
 import { QqMessageReader } from "../src/qq/message-reader.js";
-import { buildMcpTurnPrompt, buildTurnPrompt } from "../src/security/policy.js";
+import { buildMcpTurnPrompt, buildTurnPrompt, gatewaySystemInstructions } from "../src/security/policy.js";
 
 const context = {
   targetType: "group",
@@ -48,10 +48,29 @@ test("normal QQ MCP advertises the same complete fixed catalog for every convers
   };
   const groupTools = list("group-thread");
   assert.deepEqual(groupTools, list("private-thread"));
-  assert.equal(groupTools.length, 17);
-  for (const name of ["send_file", "send_image", "post_qzone", "read_qzone_feed_batch", "submit_qzone_decisions"]) {
+  assert.equal(groupTools.length, 18);
+  for (const name of ["send_file", "send_image", "recall_message", "post_qzone", "read_qzone_feeds", "engage_qzone_feed", "get_group_management", "manage_group"]) {
     assert.ok(groupTools.some((tool) => tool.name === name));
   }
+  for (const name of ["propose_qzone_post", "skip_qzone_post", "read_qzone_feed_batch", "submit_qzone_decisions"]) {
+    assert.equal(groupTools.some((tool) => tool.name === name), false);
+  }
+  const byName = Object.fromEntries(groupTools.map((tool) => [tool.name, tool]));
+  assert.deepEqual(byName.send_reaction.inputSchema.oneOf, [{ required: ["face"] }, { required: ["sticker_id"] }]);
+  assert.equal(byName.send_message.inputSchema.properties.reply_to_message_id.pattern, "^-?[0-9]+$");
+  assert.deepEqual(byName.poke_member.inputSchema.properties.user_id.oneOf[0], { const: "sender" });
+  assert.match(byName.engage_qzone_feed.description, /聊天和定时动态任务使用同一工具/);
+});
+
+test("stable gateway rules distinguish live MCP sends from structured AUTO and scheduled Space turns", () => {
+  const rules = gatewaySystemInstructions();
+  assert.match(rules, /普通可写聊天的 QQ 动作只通过当前可用的 qq_gateway MCP 工具/);
+  assert.match(rules, /最终文字不会代发/);
+  assert.match(rules, /AUTO 订阅轮次先用 read_source_messages/);
+  assert.match(rules, /由网关按结构化输出发送，不用普通聊天的 send_message/);
+  assert.match(rules, /聊天和动态定时任务共用工具/);
+  assert.match(rules, /定时任务.*不会预塞群聊消息，读取也不清理 pending/);
+  assert.doesNotMatch(rules, /\[\[qq_/);
 });
 
 test("QQ MCP exposes current real reactions and queues face, sticker and current-group poke", () => {
@@ -76,6 +95,7 @@ test("QQ MCP rejects unknown sticker, cross-group poke and untrusted Qzone publi
   assert.equal(call("poke_member", { user_id: "987654321" }).isError, true);
   assert.equal(call("post_qzone", { content: "假动态" }).isError, true);
   assert.deepEqual(queued, []);
+  assert.match(call("submit_qzone_decisions", { actions: [] }).content[0].text, /当前轮次不支持 QQ MCP 工具 submit_qzone_decisions/);
 });
 
 test("QQ MCP queues one OWNER post, forbids scheduled images, and denies inactive turns", () => {
@@ -111,6 +131,9 @@ test("AUTO MCP exposes only its claimed source and rejects unrelated QQ actions"
   assert.equal(handleQqMcpTool({ name: "read_messages", context: source }).isError, true);
   assert.equal(handleQqMcpTool({ name: "send_message", args: { text: "不得向来源群发" }, context: source }).isError, true);
   assert.equal(handleQqMcpTool({ name: "read_source_messages", context: {} }).isError, true);
+  const stopped = { sourceGroupId: "54321", sourceReadContent: "不应读取", sourceReadCalled: false, canRead: () => false };
+  assert.equal(handleQqMcpTool({ name: "read_source_messages", context: stopped }).isError, true);
+  assert.equal(stopped.sourceReadCalled, false);
 });
 
 test("compact MCP prompt keeps authority outside the fetched message body", () => {

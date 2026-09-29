@@ -115,8 +115,97 @@ export class SessionStore {
     return Object.values(this.state.groups).flatMap((group) => group.pendingMessages.flatMap((message) => message.images || []));
   }
 
+  isRecalled(groupId, messageId) {
+    return this.ensureGroup(groupId).recalledMessageIds.includes(String(messageId));
+  }
+
+  async recallMessage(groupId, messageId) {
+    const group = this.ensureGroup(groupId);
+    const id = String(messageId);
+    if (!id || group.recalledMessageIds.includes(id)) return { removedMessages: [], removedImages: [], wasProcessing: false };
+    group.recalledMessageIds = [...group.recalledMessageIds, id].slice(-512);
+    const removedMessages = group.pendingMessages.filter((message) => String(message.messageId) === id);
+    group.pendingMessages = group.pendingMessages.filter((message) => String(message.messageId) !== id);
+    const removedImages = [];
+    const redactedPending = [];
+    const redactQuote = (message) => {
+      if (String(message.replyToMessageId || "") === id || String(message.quotedMessage?.messageId || "") === id) {
+        message.quotedMessage = null;
+        message.quoteError = "被引用消息已撤回";
+        removedImages.push(...(message.images || []).filter((image) => image.context === "quoted"));
+        message.images = (message.images || []).filter((image) => image.context !== "quoted");
+        return true;
+      }
+      return false;
+    };
+    for (const message of group.pendingMessages) if (redactQuote(message)) redactedPending.push(message);
+    for (const turn of group.recentTurns) {
+      turn.messages = (turn.messages || []).filter((message) => String(message.messageId) !== id);
+      turn.messages.forEach(redactQuote);
+    }
+    if (String(group.pendingTrigger?.messageId || "") === id) group.pendingTrigger = null;
+    const wasProcessing = [...removedMessages, ...redactedPending].some((message) => group.processing?.kind === "agent"
+      && Number(message.sequence) <= Math.max(Number(group.processing.cutoffSequence || 0), Number(group.liveSession?.lastReadSequence || 0)));
+    if (wasProcessing) group.processing.invalidatedByRecall = true;
+    await this.save();
+    this.messageEvents.emit(String(groupId));
+    return { removedMessages, removedImages, wasProcessing };
+  }
+
+  async markLiveReadSequence(groupId, sequence) {
+    const group = this.ensureGroup(groupId);
+    if (!group.busy || group.processing?.kind !== "agent") return;
+    const live = group.liveSession || { lastSentSequence: 0, lastReply: "", actions: [] };
+    const next = Math.max(Number(live.lastReadSequence || 0), Math.max(0, Number(sequence || 0)));
+    if (next === Number(live.lastReadSequence || 0)) return;
+    live.lastReadSequence = next;
+    group.liveSession = live;
+    await this.save();
+  }
+
+  async invalidateActiveWorkForRecall(groupId) {
+    const group = this.ensureGroup(groupId);
+    if (!group.busy || group.processing?.kind !== "agent") return false;
+    group.processing.invalidatedByRecall = true;
+    await this.save();
+    return true;
+  }
+
+  getSentMessage(groupId, messageId) {
+    return structuredClone(this.ensureGroup(groupId).sentMessages.find((item) =>
+      String(item.messageId) === String(messageId) && !item.recalledAt) || null);
+  }
+
+  async markSentMessageRecalled(groupId, messageId) {
+    const group = this.ensureGroup(groupId);
+    const sent = group.sentMessages.find((item) => String(item.messageId) === String(messageId));
+    if (!sent || sent.recalledAt) return false;
+    sent.recalledAt = this.nowIso();
+    if (group.liveSession) {
+      for (const action of group.liveSession.actions || []) {
+        if (String(action.messageId) === String(messageId)) action.recalledAt = sent.recalledAt;
+      }
+      group.liveSession.lastSentSequence = Math.max(0, ...(group.liveSession.actions || [])
+        .filter((item) => item.chatReply && !item.recalledAt)
+        .map((item) => Number(item.observedSequence || 0)));
+      if (String(group.liveSession.lastReplyMessageId) === String(messageId)) {
+        const previous = [...(group.liveSession.actions || [])].reverse().find((item) =>
+          item.chatReply && !item.recalledAt && item.messageId);
+        group.liveSession.lastReply = previous?.summary || "";
+        group.liveSession.lastReplyMessageId = previous?.messageId || null;
+      }
+    }
+    if (String(group.lastCompletedReply?.messageId) === String(messageId)) {
+      group.lastCompletedReply = null;
+      group.lastReply = "";
+    }
+    await this.save();
+    return true;
+  }
+
   async appendMessage(message) {
     const group = this.ensureGroup(message.groupId);
+    if (group.recalledMessageIds.includes(String(message.messageId))) return null;
     const stored = {
       ...structuredClone(message),
       sequence: this.state.nextSequence++,
@@ -364,7 +453,7 @@ export class SessionStore {
     return processed;
   }
 
-  async recordLiveActionSent(groupId, { kind, summary = "", observedSequence = 0, chatReply = true } = {}) {
+  async recordLiveActionSent(groupId, { kind, summary = "", observedSequence = 0, chatReply = true, messageId = null } = {}) {
     const group = this.ensureGroup(groupId);
     if (!group.busy || group.processing?.kind !== "agent") throw new Error("No live Agent conversation is active");
     // An in-flight OneBot request may succeed just as the reply switch turns off.
@@ -374,19 +463,44 @@ export class SessionStore {
       Number(group.pendingMessages.at(-1)?.sequence || 0)
     );
     const live = group.liveSession || { lastSentSequence: 0, lastReply: "", actions: [] };
+    const confirmedMessageId = /^-?\d+$/u.test(String(messageId || "")) ? String(messageId) : null;
     if (chatReply) {
       live.lastSentSequence = Math.max(Number(live.lastSentSequence || 0), latestObserved);
       live.lastReply = String(summary || "").slice(0, 12000);
+      live.lastReplyMessageId = confirmedMessageId;
     }
     live.lastSentAt = this.nowIso();
     live.actions = [...(live.actions || []), {
       kind: String(kind || "action"), summary: String(summary || "").slice(0, 500), at: live.lastSentAt,
-      observedSequence: latestObserved
+      observedSequence: latestObserved, messageId: confirmedMessageId, chatReply: Boolean(chatReply)
     }].slice(-30);
+    if (confirmedMessageId) group.sentMessages = [...group.sentMessages.filter((item) => item.messageId !== confirmedMessageId), {
+      messageId: confirmedMessageId, kind: String(kind || "action"), summary: String(summary || "").slice(0, 500),
+      sentAt: live.lastSentAt, recalledAt: null
+    }].slice(-50);
     group.liveSession = live;
     group.lastActivityAt = live.lastSentAt;
     await this.save();
     return structuredClone(live);
+  }
+
+  /** A scheduled Space turn may chat without consuming or acknowledging pending QQ input. */
+  async recordStandaloneActionSent(groupId, { kind, summary = "", chatReply = true, messageId = null } = {}) {
+    const group = this.ensureGroup(groupId);
+    this.assertReplyEnabled(groupId);
+    const at = this.nowIso();
+    const confirmedMessageId = /^-?\d+$/u.test(String(messageId || "")) ? String(messageId) : null;
+    if (confirmedMessageId) group.sentMessages = [...group.sentMessages.filter((item) => item.messageId !== confirmedMessageId), {
+      messageId: confirmedMessageId, kind: String(kind || "action"), summary: String(summary || "").slice(0, 500),
+      sentAt: at, recalledAt: null
+    }].slice(-50);
+    if (chatReply) {
+      group.lastReply = String(summary || "").slice(0, 12000);
+      group.lastCompletedReply = { text: group.lastReply, completedAt: at };
+    }
+    group.lastActivityAt = at;
+    await this.save();
+    return { messageId: confirmedMessageId, completedAt: at };
   }
 
   async completeLiveConversation(groupId, {
@@ -409,7 +523,7 @@ export class SessionStore {
     if (!group.pendingMessages.length && group.pendingTrigger?.reason !== "subscription_auto") group.pendingTrigger = null;
     if (live?.lastReply) {
       group.lastReply = live.lastReply;
-      group.lastCompletedReply = { text: live.lastReply, completedAt: this.nowIso() };
+      group.lastCompletedReply = { text: live.lastReply, completedAt: this.nowIso(), messageId: live.lastReplyMessageId || null };
     }
     group.deferredThroughSequence = cutoff ? 0 : Math.max(
       Number(group.deferredThroughSequence || 0), Number(lastReadSequence || 0)
@@ -610,9 +724,10 @@ export class SessionStore {
     group.busy = false;
     group.processing = null;
     group.replyFollowup = null;
-    const paused = group.replyEnabled === false || error?.code === "REPLY_DISABLED";
+    const recalled = processing?.invalidatedByRecall === true || error?.code === "RECALLED_INPUT";
+    const paused = group.replyEnabled === false || error?.code === "REPLY_DISABLED" || recalled;
     group.lastError = paused ? null : String(error?.message || error).slice(0, 2000);
-    if (paused && processing?.trigger && !group.pendingTrigger) {
+    if (paused && !recalled && processing?.trigger && !group.pendingTrigger) {
       group.pendingTrigger = structuredClone(processing.trigger);
     }
     if (delivery && processing?.cutoffSequence != null) {
@@ -684,6 +799,11 @@ export class SessionStore {
 
   assertReplyEnabled(groupId) {
     const group = this.ensureGroup(groupId);
+    if (group.processing?.invalidatedByRecall) {
+      const error = new Error("本轮包含已撤回消息，停止发送并保留其余待处理消息");
+      error.code = "RECALLED_INPUT";
+      throw error;
+    }
     const stale = group.processing?.replyRevision != null && group.processing.replyRevision !== group.replyRevision;
     if (group.replyEnabled !== false && !stale) return;
     const error = new Error("本会话回复已关闭，消息继续记录");
@@ -727,6 +847,8 @@ function createGroupState(groupId, defaultCodexConfig = null) {
     bootstrapRevision: 0,
     migratedFromLegacy: false,
     pendingMessages: [],
+    recalledMessageIds: [],
+    sentMessages: [],
     busy: false,
     pendingTrigger: null,
     processing: null,
@@ -764,11 +886,15 @@ function normalizeState(value, defaultCodexConfig = null) {
       : null;
     group.bootstrapRevision = Math.max(0, Math.floor(Number(raw.bootstrapRevision) || 0));
     group.pendingMessages = Array.isArray(raw.pendingMessages) ? raw.pendingMessages : [];
+    group.recalledMessageIds = Array.isArray(raw.recalledMessageIds) ? raw.recalledMessageIds.map(String).slice(-512) : [];
+    group.sentMessages = Array.isArray(raw.sentMessages) ? raw.sentMessages.filter((item) => /^-?\d+$/u.test(String(item?.messageId || ""))).slice(-50) : [];
     group.recentTurns = Array.isArray(raw.recentTurns) ? raw.recentTurns.slice(-50) : [];
     group.failedDelivery = raw.failedDelivery ? normalizeDelivery(raw.failedDelivery) : null;
     group.liveSession = raw.liveSession && typeof raw.liveSession === "object" ? {
       lastSentSequence: Math.max(0, Number(raw.liveSession.lastSentSequence || 0)),
+      lastReadSequence: Math.max(0, Number(raw.liveSession.lastReadSequence || 0)),
       lastReply: String(raw.liveSession.lastReply || "").slice(0, 12000),
+      lastReplyMessageId: raw.liveSession.lastReplyMessageId || null,
       lastSentAt: raw.liveSession.lastSentAt || null,
       actions: Array.isArray(raw.liveSession.actions) ? raw.liveSession.actions.slice(-30) : []
     } : null;

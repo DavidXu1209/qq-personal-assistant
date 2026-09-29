@@ -112,6 +112,37 @@ test("AUTO claim recovers after restart without losing its debounced collection"
   assert.equal(restored.listSubscriptions()[0].state.processingUntilMessageId, null);
 });
 
+test("recalled source messages disappear from the source window and every subscriber queue", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "crc-source-recall-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = join(directory, "subscriptions.json");
+  const source = new SubscriptionStore({ filePath });
+  await source.init();
+  await source.upsertSubscription({ targetType: "group", targetId: "12345", sourceGroupId: "54321", mode: "AUTO", intakeMode: "ALL" });
+  await source.upsertSubscription({ targetType: "private", targetId: "67890", sourceGroupId: "54321", mode: "AUTO", intakeMode: "ALL" });
+  await source.appendSourceMessage(sourceMessage("101", "这条撤回", "admin"));
+  await source.appendSourceMessage({ ...sourceMessage("102", "这条保留", "admin"),
+    replyToMessageId: "101", quotedMessage: { messageId: "101", text: "撤回后要删掉" },
+    images: [{ context: "quoted", localPath: "/tmp/source-quote.jpg" }] });
+  const dueAt = Date.parse(source.listSubscriptions({ targetType: "group", targetId: "12345" })[0].state.collectionDeadline);
+  source.clock = () => new Date(dueAt + 1000);
+  assert.equal((await source.claimForTarget("group", "12345", { mode: "AUTO" })).length, 1);
+  const recalled = await source.recallSourceMessage("54321", "101");
+  assert.deepEqual(recalled.activeTargets, ["group:12345"]);
+  assert.equal(recalled.removedMessages.some((item) => item.messageId === "101"), true);
+  assert.ok(recalled.removedImages.some((image) => image.localPath === "/tmp/source-quote.jpg"));
+  assert.deepEqual(source.snapshot().sources["54321"].messages.map((item) => item.messageId), ["102"]);
+  assert.equal(source.snapshot().sources["54321"].messages[0].quotedMessage, null);
+  assert.deepEqual(source.snapshot().sources["54321"].messages[0].images, []);
+  for (const subscription of source.listSubscriptions({ sourceGroupId: "54321" })) {
+    assert.deepEqual(subscription.state.pendingMessages.map((item) => item.messageId), ["102"]);
+  }
+  assert.equal((await source.appendSourceMessage(sourceMessage("101", "延迟重放", "admin"))).recalled, true);
+  const restarted = new SubscriptionStore({ filePath });
+  await restarted.init();
+  assert.equal(restarted.isSourceRecalled("54321", "101"), true);
+});
+
 test("version 2 permanent history migrates to bounded recent context and active references", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "crc-subscription-v2-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -919,9 +950,13 @@ test("WorkBuddy Agent private final text never sends without the MCP send_messag
   const sent = [];
   const codex = new FakeCodex();
   codex.supportsQqMcp = true;
-  codex.runTurn = async ({ qqToolContext }) => {
-    const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "private-final-only" });
-    assert.match(read.content[0].text, /私聊只读后沉默/);
+  let runs = 0;
+  codex.runTurn = async ({ qqToolContext, prompt }) => {
+    runs += 1;
+    if (runs === 1) {
+      const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "private-final-only" });
+      assert.match(read.content[0].text, /私聊只读后沉默/);
+    } else assert.match(prompt, /send_message/);
     return { text: "这只是最终文字，不应发到私聊。", turnId: "private-final-only", compacted: false };
   };
   const worker = new PrivateWorker({
@@ -936,6 +971,7 @@ test("WorkBuddy Agent private final text never sends without the MCP send_messag
   });
   await fixture.privateSessions.requestTrigger(OWNER_QQ_ID, "mention", pending);
   await worker.kick(OWNER_QQ_ID);
+  assert.equal(runs, 2);
   assert.deepEqual(sent, []);
   assert.deepEqual(fixture.privateSessions.snapshot(OWNER_QQ_ID).pendingMessages.map((item) => item.messageId), ["private-final-only"]);
   assert.equal(fixture.privateSessions.snapshot(OWNER_QQ_ID).lastCompletedReply, null);

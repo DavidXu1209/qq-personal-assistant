@@ -12,6 +12,7 @@ export function handleQqMcpTool({ name, args = {}, context, queued = [] }) {
   }
   if (name === "read_source_messages") {
     if (!context.sourceReadContent || !context.sourceGroupId) return failure("当前轮次没有可读取的只读来源群快照。");
+    if (context.canRead?.() === false) return failure("当前轮次已停止，不能继续读取通知来源。");
     context.sourceReadCalled = true;
     return success({ sourceGroupId: context.sourceGroupId, content: context.sourceReadContent });
   }
@@ -20,6 +21,11 @@ export function handleQqMcpTool({ name, args = {}, context, queued = [] }) {
     if (context.requireRead && !context.readCalled) return failure("请先调用 read_messages 读取本轮消息。");
     let segments;
     let message;
+    const replyToMessageId = args.reply_to_message_id == null ? null : String(args.reply_to_message_id).trim();
+    if (replyToMessageId != null && (!/^-?\d+$/u.test(replyToMessageId)
+      || !context.liveMode || !context.canReplyToMessage?.(replyToMessageId))) {
+      return failure("只能引用当前会话已经读取、尚未撤回的真实 QQ 消息 ID；不引用时请省略 reply_to_message_id。");
+    }
     try {
       if (args.segments != null) {
         if (args.text != null) return failure("text 和 segments 请二选一。");
@@ -39,7 +45,7 @@ export function handleQqMcpTool({ name, args = {}, context, queued = [] }) {
     if (!message || message.length > 12_000) return failure("消息正文须为 1–12000 字。");
     if (/\[\[qq_[^\]]*\]\]/iu.test(message)) return failure("消息正文不能包含 QQ 动作指令；请分别使用对应的 MCP 工具。");
     if (queued.some((item) => item.kind === "message")) return failure("本轮已提交一条文字消息，请不要重复提交。");
-    queued.push({ kind: "message", text: message, ...(segments ? { segments } : {}) });
+    queued.push({ kind: "message", text: message, ...(segments ? { segments } : {}), replyToMessageId });
     return success("文字已交给当前会话网关待发送；实际发送成功后才会标记消息已处理。最终回复不要重复正文。");
   }
   if (name === "send_file" || name === "send_image") {
@@ -95,7 +101,8 @@ export function handleQqMcpTool({ name, args = {}, context, queued = [] }) {
     if (context.scheduledQzonePost && images.length) return failure("定时动态只支持纯文字。");
     return queue(queued, "qzone", `[[qq_zone_post:${JSON.stringify({ content, ...(images.length ? { images } : {}) })}]]`, 1);
   }
-  return failure("未知 QQ MCP 工具。");
+  const toolName = String(name || "").replace(/[\r\n]/gu, " ").slice(0, 80);
+  return failure(`当前轮次不支持 QQ MCP 工具 ${toolName || "（未提供名称）"}；请按本轮模式使用对应工具。`);
 }
 
 function queue(queued, kind, directive, limit) {

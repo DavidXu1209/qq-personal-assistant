@@ -204,6 +204,7 @@ test("05:00 queues all group/private replies, labels and Space work behind curat
   assert.equal(coordinator.snapshot().status, "completed");
   assert.equal(manager.publicState().total, 80);
   assert.ok(events.includes("private-reply") && events.includes("label") && events.includes("space"));
+  assert.ok(events.indexOf("private-reply") < events.indexOf("space"), "an earlier chat wake must run before Space work");
   assert.equal(gate.blocked, false);
   assert.equal(incoming.snapshot("group").pendingMessages.length, 1);
 });

@@ -60,6 +60,48 @@ export class SubscriptionStore {
     return Object.values(this.state.sources).flatMap((source) => source.messages.flatMap((message) => message.images || []));
   }
 
+  isSourceRecalled(groupId, messageId) {
+    return this.ensureSource(groupId).recalledMessageIds.includes(String(messageId));
+  }
+
+  async recallSourceMessage(groupId, messageId) {
+    const source = this.ensureSource(groupId);
+    const id = String(messageId);
+    if (!id || source.recalledMessageIds.includes(id)) return { removedMessages: [], removedImages: [], activeTargets: [] };
+    source.recalledMessageIds = [...source.recalledMessageIds, id].slice(-512);
+    const removedMessages = [...source.messages, ...source.recentMessages].filter((message) => String(message.messageId) === id);
+    const recalledSequences = new Set(removedMessages
+      .map((message) => Number(message.sequence)));
+    source.messages = source.messages.filter((message) => String(message.messageId) !== id);
+    source.recentMessages = source.recentMessages.filter((message) => String(message.messageId) !== id);
+    const removedImages = [];
+    const redactedSequences = new Set();
+    for (const message of [...source.messages, ...source.recentMessages]) {
+      if (String(message.replyToMessageId || "") !== id && String(message.quotedMessage?.messageId || "") !== id) continue;
+      message.quotedMessage = null;
+      message.quoteError = "被引用消息已撤回";
+      removedImages.push(...(message.images || []).filter((image) => image.context === "quoted"));
+      message.images = (message.images || []).filter((image) => image.context !== "quoted");
+      redactedSequences.add(Number(message.sequence));
+    }
+    const affectedSequences = new Set([...recalledSequences, ...redactedSequences]);
+    const activeTargets = new Set();
+    for (const subscription of Object.values(this.state.subscriptions)) {
+      if (subscription.sourceGroupId !== String(groupId)) continue;
+      const relevant = subscription.state.pendingSequences.some((sequence) => affectedSequences.has(Number(sequence)))
+        || Object.values(subscription.state.contextByTrigger).some((sequences) => sequences.some((sequence) => affectedSequences.has(Number(sequence))));
+      if (relevant && subscription.state.processingUntilSequence != null) activeTargets.add(targetKey(subscription.targetType, subscription.targetId));
+      subscription.state.pendingSequences = subscription.state.pendingSequences.filter((sequence) => !recalledSequences.has(Number(sequence)));
+      for (const [trigger, context] of Object.entries(subscription.state.contextByTrigger)) {
+        if (recalledSequences.has(Number(trigger))) delete subscription.state.contextByTrigger[trigger];
+        else subscription.state.contextByTrigger[trigger] = context.filter((sequence) => !recalledSequences.has(Number(sequence)));
+      }
+    }
+    removedMessages.push(...this.garbageCollectSource(groupId));
+    await this.save();
+    return { removedMessages, removedImages, activeTargets: [...activeTargets] };
+  }
+
   async upsertSubscription(input) {
     if (input.mode != null && input.mode !== SUBSCRIPTION_MODE.AUTO) {
       throw new Error("通知订阅仅支持自动处理，静默模式已移除");
@@ -120,6 +162,9 @@ export class SubscriptionStore {
 
   async appendSourceMessage(message) {
     const source = this.ensureSource(message.groupId);
+    if (source.recalledMessageIds.includes(String(message.messageId))) {
+      return { duplicate: true, recalled: true, message: null, affectedTargets: [], removedMessages: [] };
+    }
     if ([...source.messages, ...source.recentMessages].some((item) => item.messageId === String(message.messageId))) {
       return { duplicate: true, message: null, affectedTargets: [], removedMessages: [] };
     }
@@ -393,8 +438,9 @@ export class SubscriptionStore {
   ensureSource(groupId) {
     const id = String(groupId || "");
     if (!id) throw new Error("Source group id is required");
-    this.state.sources[id] ||= { groupId: id, groupName: null, lastActivityAt: null, messages: [], recentMessages: [] };
+    this.state.sources[id] ||= { groupId: id, groupName: null, lastActivityAt: null, messages: [], recentMessages: [], recalledMessageIds: [] };
     this.state.sources[id].recentMessages ||= [];
+    this.state.sources[id].recalledMessageIds ||= [];
     return this.state.sources[id];
   }
 
@@ -512,7 +558,8 @@ function normalizeState(value, now) {
       groupName: raw.groupName || null,
       lastActivityAt: raw.lastActivityAt || null,
       messages,
-      recentMessages: (Array.isArray(raw.recentMessages) ? raw.recentMessages : history).map(toRecentMessage).slice(-10)
+      recentMessages: (Array.isArray(raw.recentMessages) ? raw.recentMessages : history).map(toRecentMessage).slice(-10),
+      recalledMessageIds: Array.isArray(raw.recalledMessageIds) ? raw.recalledMessageIds.map(String).slice(-512) : []
     };
     for (const message of [...messages, ...history]) state.nextSequence = Math.max(state.nextSequence, Number(message.sequence || 0) + 1);
   }

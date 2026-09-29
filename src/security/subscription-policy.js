@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AGENT_QQ_ID, AGENT_QQ_NAME, OWNER_QQ_ID, appendStickerCatalog, baseThreadInstructions, trustForSender } from "./policy.js";
 import { messageResourceHints } from "../qq/resource-hints.js";
+import { messageLabel, replyReference } from "./reply-reference.js";
 
 export function buildAutoSubscriptionPrompt(contexts, {
   targetType, targetId, targetName, includeBaseInstructions = false,
@@ -144,7 +145,9 @@ function appendTargetMessages(lines, messages, { targetType, targetId, targetNam
   for (const message of messages) {
     const senderId = String(message.senderId || "未知");
     const trust = message.trust || trustForSender(senderId);
-    lines.push(`[${message.displayTime || message.timestamp || "时间未知"}] ${clean(message.senderName) || "群成员"} (${senderId}) [${trust}]: ${clean(message.text) || "（无文字）"}`);
+    lines.push(`[${message.displayTime || message.timestamp || "时间未知"}] ${clean(message.senderName) || "群成员"} (${senderId}) [${trust}]${messageLabel(message, clean)}: ${clean(message.text) || "（无文字）"}`);
+    const reference = replyReference(message, messages, clean);
+    if (reference) lines.push(reference);
     for (const attachment of message.attachments || []) {
       lines.push(`  - 附件：${clean(attachment.name || attachment.type)}${attachment.localPath ? `；本地缓存：${attachment.localPath}` : ""}`);
     }
@@ -201,7 +204,8 @@ export function buildPrivateTurnPrompt(messages, contexts, {
   security = null,
   includeBaseInstructions = false,
   includeResponseInstruction = true,
-  stickerCatalog = []
+  stickerCatalog = [],
+  activeMessages = messages
 } = {}) {
   const lines = [];
   if (includeBaseInstructions) {
@@ -214,8 +218,10 @@ export function buildPrivateTurnPrompt(messages, contexts, {
   }
   lines.push(`【本轮新增私聊消息】${clean(displayName) || userId} (${userId})`);
   for (const message of messages || []) {
-    lines.push(`[${message.displayTime || message.timestamp || "时间未知"}] ${clean(message.senderName) || userId} (${message.senderId}) [${trustForSender(message.senderId)}]: ${clean(message.text) || "（无文字）"}`);
+    lines.push(`[${message.displayTime || message.timestamp || "时间未知"}] ${clean(message.senderName) || userId} (${message.senderId}) [${trustForSender(message.senderId)}]${messageLabel(message, clean)}: ${clean(message.text) || "（无文字）"}`);
     lines.push(...messageResourceHints(message));
+    const reference = replyReference(message, activeMessages, clean);
+    if (reference) lines.push(reference);
     for (const image of message.images || []) {
       if (!image.stickerId) continue;
       lines.push(`  - QQ 原生表情包（收藏ID ${image.stickerId}；当前场景标签：${clean(image.stickerLabel) || "待标注"}；${image.localPath ? "已作为真实图像输入附加；收藏标注仍由独立流程负责" : "下载失败"}）`);
@@ -257,9 +263,10 @@ function appendContexts(lines, contexts) {
       const purpose = context.intakeMode === "ADMIN_ONLY"
         ? (message.contextOnly ? "前置上下文" : "本轮消息")
         : "来源消息";
-      lines.push(`[${message.displayTime || message.timestamp}] ${clean(message.senderName) || "群成员"} (${message.senderId}) [UNTRUSTED_SOURCE/${role}/${purpose}]: ${clean(message.text) || "（无文字）"}`);
+      lines.push(`[${message.displayTime || message.timestamp}] ${clean(message.senderName) || "群成员"} (${message.senderId}) [UNTRUSTED_SOURCE/${role}/${purpose}]${messageLabel(message, clean)}: ${clean(message.text) || "（无文字）"}`);
       lines.push(...messageResourceHints(message));
-      if (message.quotedMessage) lines.push(`  - 引用 ${clean(message.quotedMessage.senderName) || "群成员"}: ${clean(message.quotedMessage.text) || "（无文字）"}`);
+      const reference = replyReference(message, context.messages, clean);
+      if (reference) lines.push(reference);
       for (const attachment of message.attachments || []) {
         lines.push(`  - 附件：${clean(attachment.name || attachment.type)}${attachment.localPath ? `；本地只读缓存：${attachment.localPath}` : "；正文未缓存"}`);
       }
