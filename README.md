@@ -88,7 +88,7 @@ Node 服务没有生产 npm 依赖；SDK 固定版本见 [requirements.txt](modu
 
 编辑不入库的 config/qq-only.env，填写 CODEX_REMOTE_CONTACT_OWNER_QQ_ID（管理员）和 CODEX_REMOTE_CONTACT_BOT_QQ_ID（独立小号）。必须是不同的实际数字 QQ 号，没有默认值。必要时配置 WB_AGENT_CLI 和 CODEX_REMOTE_CONTACT_WB_PYTHON。
 
-编辑 runtime/qq-only-data/settings.json 的 qq.allowedGroups，填写可回复群号。qq.privateAgentUsers 可额外添加私聊，OWNER 私聊自动加入。先配置可写群，再在面板订阅只读来源；一个群不能同时承担两个角色。
+启动后在网关左侧的“Agent 群聊 / Agent 私聊”点击“添加”，可从机器人已加入的 QQ 群中选择，或输入允许私聊的 QQ 号。白名单立即生效并写回不入库的 runtime/qq-only-data/settings.json；OWNER 私聊始终可用。也可预先编辑 qq.allowedGroups 和 qq.privateAgentUsers。先加入 Agent 群，再在面板订阅只读来源；一个群不能同时承担两个角色。新群沿用默认的工作区权限，不会自动获得完全访问权限。
 
 启动脚本从 macOS 钥匙串读取通用密码，服务名默认 Codex Remote Contact QQ：
 

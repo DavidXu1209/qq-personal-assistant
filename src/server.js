@@ -30,6 +30,7 @@ import { AgentDispatchStore } from "./storage/agent-dispatch-store.js";
 import { StickerLabelSettingsStore } from "./storage/sticker-label-settings-store.js";
 import { QzoneStore } from "./qq/qzone-store.js";
 import { SubscriptionStore } from "./storage/subscription-store.js";
+import { TargetAllowlistSettings } from "./storage/target-allowlist-settings.js";
 import { resolvePersonaFiles, validateRuntimeConfig } from "./security/runtime-config.js";
 
 const sourceDir = fileURLToPath(new URL(".", import.meta.url));
@@ -77,7 +78,8 @@ const codexExecutable = process.env.CODEX_CLI_PATH || [
 ].find((candidate) => existsSync(candidate)) || "codex";
 
 const settings = await loadSettings(settingsPath);
-const allowedGroups = uniqueStrings(settings.qq?.allowedGroups || []);
+const targetAllowlist = new TargetAllowlistSettings({ filePath: settingsPath, settings });
+const allowedGroups = targetAllowlist.list("group");
 
 // 引擎选择：默认换成 WorkBuddy，可用 CODEX_REMOTE_CONTACT_ENGINE=codex 回退。
 // 传输层（QQ 队列 / 订阅 / 投递确认 / UI 状态）两者共用，接口同构。
@@ -165,7 +167,7 @@ await qzoneStore.init();
 const sourceTargetCollisions = subscriptionStore.sourceGroupIds().filter((groupId) => allowedGroups.includes(groupId));
 if (sourceTargetCollisions.length) throw new Error(`A QQ group cannot be both AGENT_CHAT_GROUP and READ_ONLY_SOURCE_GROUP: ${sourceTargetCollisions.join(", ")}`);
 
-const configuredPrivateIds = uniqueStrings([OWNER_QQ_ID, ...(settings.qq?.privateAgentUsers || []), ...subscriptionStore.privateTargetIds()]);
+const configuredPrivateIds = uniqueStrings([OWNER_QQ_ID, ...targetAllowlist.list("private"), ...subscriptionStore.privateTargetIds()]);
 const privateStore = new SessionStore({ filePath: privateSessionStorePath, defaultCodexConfig });
 await privateStore.init({ allowedGroups: configuredPrivateIds });
 const personaStore = new PersonaStore({
@@ -588,9 +590,46 @@ async function handleApi(req, res, url) {
     sendJson(res, 202, { status: "accepted", targetType, targetId, messageId: message.messageId });
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/qq/groups/available") {
+    let joined;
+    try { joined = await oneBot.getGroupList(); }
+    catch { throw new HttpError(503, "暂时无法读取机器人已加入的群，请确认 QQ 在线后重试"); }
+    const unavailable = new Set([...allowedGroups, ...subscriptionStore.sourceGroupIds()]);
+    const groups = joined
+      .map((item) => ({ groupId: String(item?.group_id || ""), groupName: String(item?.group_name || "").trim().slice(0, 100) }))
+      .filter((item) => /^\d{5,14}$/u.test(item.groupId) && !unavailable.has(item.groupId))
+      .sort((a, b) => a.groupName.localeCompare(b.groupName, "zh-CN") || a.groupId.localeCompare(b.groupId));
+    sendJson(res, 200, { groups });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/qq/groups") {
+    const body = parseJson(rawBody);
+    const groupId = validateQqId(body.groupId, "QQ group id");
+    if (allowedGroups.includes(groupId)) throw new HttpError(409, "这个群已经在 Agent 白名单中");
+    if (subscriptionStore.sourceGroupIds().includes(groupId)) throw new HttpError(409, "只读通知源不能同时加入 Agent 群白名单");
+    let joined;
+    try { joined = await oneBot.getGroupList(); }
+    catch { throw new HttpError(503, "暂时无法读取机器人已加入的群，请确认 QQ 在线后重试"); }
+    const info = joined.find((item) => String(item?.group_id || "") === groupId);
+    if (!info) throw new HttpError(400, "机器人尚未加入这个 QQ 群");
+    await store.addConversation(groupId);
+    const result = await targetAllowlist.add("group", groupId);
+    if (!result.added) throw new HttpError(409, "这个群已经在 Agent 白名单中");
+    allowedGroups.push(groupId);
+    triggerManager.allowGroup(groupId);
+    const metadata = { groupId, groupName: String(info.group_name || "").trim().slice(0, 100) || null };
+    groupMetadata[groupId] = metadata;
+    availableGroupMetadata[groupId] = metadata;
+    recordEvent({ type: "group-target-created", groupId, at: new Date().toISOString() });
+    sendJson(res, 201, { status: "created", groupId, groupName: metadata.groupName });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/qq/private-chats") {
     const body = parseJson(rawBody);
     const userId = validateQqId(body.userId, "Private QQ user id");
+    if (userId === AGENT_QQ_ID) throw new HttpError(400, "不能把机器人自己的 QQ 号加入私聊白名单");
+    if (privateStore.listGroups().some((item) => item.groupId === userId)) throw new HttpError(409, "这个 QQ 号已经在 Agent 私聊白名单中");
+    await targetAllowlist.add("private", userId);
     await privateStore.addConversation(userId);
     privateMetadata[userId] ||= { displayName: String(body.displayName || "").trim() || null };
     refreshPrivateMetadata(userId).catch(() => {});

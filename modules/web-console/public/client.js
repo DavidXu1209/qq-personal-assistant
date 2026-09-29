@@ -4,7 +4,8 @@ const els = Object.fromEntries([
   "connectionBadge", "refreshButton", "agentDispatchToggle", "agentDispatchLabel", "qzoneButton", "stickerGalleryButton", "stickerGalleryButtonCount",
   "workspace", "qzonePanel", "closeQzoneButton", "qzoneBanner", "qzoneForm", "qzoneTarget", "qzoneAutoPost", "qzonePostTimes", "qzoneAutoEngage", "qzoneLastSeenTime", "saveQzoneButton", "qzoneSaveStatus", "qzoneEvents", "stickerGallery", "closeStickerGalleryButton", "stickerReadyCount", "stickerRecognizingCount", "stickerCommitCount", "stickerGalleryModel", "stickerRecognitionStatus", "stickerGalleryActionStatus", "stickerGalleryGrid",
   "groupCount", "agentGroupCount", "sourceCount", "groupList", "privateList", "sourceList",
-  "addPrivateButton", "privateForm", "privateUserId", "privateDisplayName", "cancelPrivateButton",
+  "addGroupButton", "groupForm", "groupCandidate", "groupFormStatus", "reloadGroupCandidatesButton", "saveGroupButton", "cancelGroupButton",
+  "addPrivateButton", "privateForm", "privateUserId", "privateDisplayName", "privateFormStatus", "savePrivateButton", "cancelPrivateButton",
   "hubStatus", "oneBotStatus", "codexStatus", "sessionDetails", "subscriptionDetails", "subscriptionCount", "subscriptionList",
   "agentSettingsDetails", "agentSettingsSummary", "agentSettingsForm", "agentModel", "agentReasoningEffort",
   "agentContextTokenLimit", "agentWorkingMode", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
@@ -37,6 +38,7 @@ let stickerEditDraft = "";
 let stickerActionSavingId = "";
 let qzoneDirty = false;
 let replySwitchSaving = false;
+let groupCandidatesLoading = false;
 const scrollState = new Map();
 
 async function api(path, options = {}) {
@@ -1073,18 +1075,89 @@ els.composer.addEventListener("submit", async (event) => {
   }
 });
 
+async function loadGroupCandidates() {
+  if (groupCandidatesLoading) return;
+  groupCandidatesLoading = true;
+  els.groupCandidate.disabled = true;
+  els.saveGroupButton.disabled = true;
+  els.reloadGroupCandidatesButton.disabled = true;
+  els.groupCandidate.innerHTML = '<option value="">正在读取群列表…</option>';
+  els.groupFormStatus.textContent = "正在读取机器人已加入的群…";
+  els.groupFormStatus.className = "form-status";
+  try {
+    const result = await api("/api/qq/groups/available");
+    const groups = result.groups || [];
+    els.groupCandidate.innerHTML = groups.length
+      ? '<option value="">请选择 QQ 群</option>' + groups.map((group) => `<option value="${escapeHtml(group.groupId)}">${escapeHtml(group.groupName || "未命名群")} · ${escapeHtml(group.groupId)}</option>`).join("")
+      : '<option value="">没有可加入的群</option>';
+    els.groupCandidate.disabled = !groups.length;
+    els.saveGroupButton.disabled = true;
+    els.groupFormStatus.textContent = groups.length ? `可选择 ${groups.length} 个群；加入后立即生效。` : "机器人已加入的群都已管理，或被设为只读通知源。";
+    els.groupFormStatus.className = "form-status";
+  } catch (error) {
+    els.groupCandidate.innerHTML = '<option value="">读取失败</option>';
+    els.groupFormStatus.textContent = error.message;
+    els.groupFormStatus.className = "form-status error";
+  } finally {
+    groupCandidatesLoading = false;
+    els.reloadGroupCandidatesButton.disabled = false;
+  }
+}
+
+function closeGroupForm() {
+  els.groupForm.hidden = true;
+  els.addGroupButton.hidden = false;
+  els.groupForm.reset();
+  els.groupFormStatus.textContent = "";
+  els.groupFormStatus.className = "form-status";
+}
+
+els.addGroupButton.addEventListener("click", () => {
+  els.groupForm.hidden = false;
+  els.addGroupButton.hidden = true;
+  loadGroupCandidates().catch(showError);
+});
+els.reloadGroupCandidatesButton.addEventListener("click", () => loadGroupCandidates().catch(showError));
+els.groupCandidate.addEventListener("change", () => { els.saveGroupButton.disabled = !els.groupCandidate.value; });
+els.cancelGroupButton.addEventListener("click", closeGroupForm);
+els.groupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const groupId = els.groupCandidate.value;
+  if (!groupId || groupCandidatesLoading) return;
+  els.saveGroupButton.disabled = true;
+  els.groupFormStatus.textContent = "正在加入白名单…";
+  els.groupFormStatus.className = "form-status";
+  try {
+    await api("/api/qq/groups", { method: "POST", body: JSON.stringify({ groupId }) });
+    closeGroupForm();
+    selectedKey = `group:${groupId}`;
+    await refresh();
+  } catch (error) {
+    els.groupFormStatus.textContent = error.message;
+    els.groupFormStatus.className = "form-status error";
+    els.saveGroupButton.disabled = false;
+  }
+});
+
 els.addPrivateButton.addEventListener("click", () => {
   els.privateForm.hidden = false;
   els.addPrivateButton.hidden = true;
+  els.privateFormStatus.textContent = "";
+  els.privateFormStatus.className = "form-status";
   els.privateUserId.focus();
 });
 els.cancelPrivateButton.addEventListener("click", () => {
   els.privateForm.hidden = true;
   els.addPrivateButton.hidden = false;
   els.privateForm.reset();
+  els.privateFormStatus.textContent = "";
+  els.privateFormStatus.className = "form-status";
 });
 els.privateForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  els.savePrivateButton.disabled = true;
+  els.privateFormStatus.textContent = "正在加入白名单…";
+  els.privateFormStatus.className = "form-status";
   try {
     const userId = els.privateUserId.value.trim();
     await api("/api/qq/private-chats", { method: "POST", body: JSON.stringify({ userId, displayName: els.privateDisplayName.value.trim() }) });
@@ -1094,7 +1167,10 @@ els.privateForm.addEventListener("submit", async (event) => {
     selectedKey = `private:${userId}`;
     await refresh();
   } catch (error) {
-    showError(error);
+    els.privateFormStatus.textContent = error.message;
+    els.privateFormStatus.className = "form-status error";
+  } finally {
+    els.savePrivateButton.disabled = false;
   }
 });
 

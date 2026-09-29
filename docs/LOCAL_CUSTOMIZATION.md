@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 网关网页与 Mac 客户端界面 | `modules/web-console/public/client.html`、`client.css`、`client.js` | 网页刷新；原生客户端重新构建 |
 | 模型、模式、权限、通知订阅 | 网关面板 | 由后台保存；通常下一轮生效 |
+| 可回复群聊 / 私聊白名单 | 网关左侧“Agent 群聊 / Agent 私聊”的“添加” | 加入后立即生效，写入私有 `runtime/qq-only-data/settings.json`；群聊须先让机器人入群 |
 | 私人身份、部署路径 | `config/qq-only.env` | 重启 Hub 与相关恢复服务 |
 | 所有会话共用的人格核心 | `config/private/persona/core.json` | 重启 Hub 后生效；`examples.json` 保留兼容，但不再逐轮注入 |
 | 自动学习 OWNER 发言风格 | 网关在 `runtime/qq-only-data/persona-style-samples.json` 暂存样本 | 每天上海时间 04:00 总结后，所有持久会话下一轮共同生效 |

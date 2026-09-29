@@ -116,7 +116,13 @@ const server = createServer(async (req,res) => {
   const path = new URL(req.url,"http://localhost").pathname;
   res.setHeader("Cache-Control","no-store");
   if (req.method !== "GET") { res.writeHead(403,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"演示模式：禁止真实操作"}));return; }
-  if (path === "/api/state" || path === "/api/maintenance") {
+  if (path === "/api/qq/groups/available") {
+    res.setHeader("Content-Type","application/json");
+    res.end(JSON.stringify({ groups: [
+      { groupId: "200000003", groupName: "新群聊（演示）" },
+      { groupId: "200000004", groupName: "项目小组（演示）" }
+    ] }));
+  } else if (path === "/api/state" || path === "/api/maintenance") {
     res.setHeader("Content-Type","application/json");res.end(JSON.stringify(path === "/api/state" ? state : maintenance));
   } else if (path === "/api/qq/stream") {
     res.writeHead(200,{"Content-Type":"text/event-stream"});

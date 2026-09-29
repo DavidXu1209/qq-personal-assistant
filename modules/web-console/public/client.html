@@ -46,7 +46,19 @@
 
           <div class="navigation-scroll">
             <section class="nav-section">
-              <div class="nav-section-title"><span>Agent 群聊</span><span id="agentGroupCount">0</span></div>
+              <div class="nav-section-title">
+                <span>Agent 群聊 <span id="agentGroupCount">0</span></span>
+                <button id="addGroupButton" class="mini-button" type="button">添加</button>
+              </div>
+              <form id="groupForm" class="compact-form" hidden>
+                <label for="groupCandidate">选择机器人已加入的群
+                  <select id="groupCandidate" required disabled><option value="">正在读取群列表…</option></select>
+                </label>
+                <p class="field-note">只显示尚未管理、且不是只读通知源的群。加入后群成员可按该会话的权限触发老代。</p>
+                <p id="groupFormStatus" class="form-status" role="status" aria-live="polite"></p>
+                <button id="reloadGroupCandidatesButton" class="mini-button" type="button">刷新群列表</button>
+                <div class="compact-actions"><button id="saveGroupButton" class="button primary" type="submit" disabled>加入白名单</button><button id="cancelGroupButton" class="button ghost" type="button">取消</button></div>
+              </form>
               <nav id="groupList" class="group-list" aria-label="选择 Agent QQ 群"></nav>
             </section>
 
@@ -56,9 +68,10 @@
                 <button id="addPrivateButton" class="mini-button" type="button">添加</button>
               </div>
               <form id="privateForm" class="compact-form" hidden>
-                <label>QQ 号<input id="privateUserId" inputmode="numeric" pattern="[0-9]{5,14}" placeholder="100000001" required /></label>
-                <label>备注<input id="privateDisplayName" placeholder="可选" /></label>
-                <div class="compact-actions"><button class="button primary" type="submit">保存</button><button id="cancelPrivateButton" class="button ghost" type="button">取消</button></div>
+                <label for="privateUserId">QQ 号<input id="privateUserId" inputmode="numeric" pattern="[0-9]{5,14}" placeholder="输入要允许私聊的 QQ 号" required /></label>
+                <label for="privateDisplayName">备注<input id="privateDisplayName" placeholder="可选" /></label>
+                <p id="privateFormStatus" class="form-status" role="status" aria-live="polite"></p>
+                <div class="compact-actions"><button id="savePrivateButton" class="button primary" type="submit">加入白名单</button><button id="cancelPrivateButton" class="button ghost" type="button">取消</button></div>
               </form>
               <nav id="privateList" class="group-list" aria-label="选择 Agent QQ 私聊"></nav>
             </section>

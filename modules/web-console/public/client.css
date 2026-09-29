@@ -563,6 +563,7 @@ h2 { font-size: 17px; line-height: 1.25; letter-spacing: -0.015em; }
 .agent-settings-form select { min-height: 38px; font-size: 11px; }
 .agent-settings-form select:disabled { color: #7d8993; background: #0d1115; cursor: not-allowed; opacity: 0.72; }
 .agent-settings-form .field-note { color: var(--quiet); font-size: 9px; font-weight: 400; line-height: 1.45; }
+.compact-form .field-note { margin: 0; color: var(--quiet); font-size: 9px; line-height: 1.45; }
 .persona-learning { display: grid; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #0d1216; gap: 6px; }
 .persona-learning-head { display: flex; align-items: center; justify-content: space-between; color: #b8c6d1; font-size: 10px; gap: 8px; }
 .persona-learning-head strong { color: var(--accent); font-size: 9px; font-weight: 650; text-align: right; }

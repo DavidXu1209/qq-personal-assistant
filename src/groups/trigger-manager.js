@@ -18,6 +18,12 @@ export class TriggerManager {
     return this.allowedGroups == null || this.allowedGroups.has(String(groupId));
   }
 
+  allowGroup(groupId) {
+    const id = String(groupId);
+    this.allowedGroups?.add(id);
+    this.startupPendingSequence.set(id, Number(this.store.snapshot(id).pendingMessages.at(-1)?.sequence || 0));
+  }
+
   setWorker(worker) {
     this.worker = worker;
   }
