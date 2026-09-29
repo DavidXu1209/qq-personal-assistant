@@ -1123,7 +1123,6 @@ async function maintenanceState() {
       subscriptions: subscriptionStorePath,
       agentDispatch: agentDispatchStorePath,
       stickers: stickerStorePath,
-      personaRules: personaRulesPath,
       personaOwnerStyle: personaOwnerStylePath,
       personaStyleSamples: personaStyleSamplesPath,
       mediaRoot,
