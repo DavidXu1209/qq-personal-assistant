@@ -26,7 +26,7 @@ function isOwnerFeedRequest(text) {
 }
 
 export class QzoneCoordinator {
-  constructor({ store, oneBot, fileManager = null, groupStore, privateStore, groupWorker, privateWorker, canRun = () => true, scheduleTimes = ["08:00", "12:00", "18:00"], clock = () => new Date(), onEvent = () => {} } = {}) {
+  constructor({ store, oneBot, fileManager = null, groupStore, privateStore, groupWorker, privateWorker, canRun = () => true, scheduleTimes = ["08:00", "12:00", "18:00"], clock = () => new Date(), onEvent = () => {}, onActivityChange = () => {} } = {}) {
     this.store = store;
     this.oneBot = oneBot;
     this.fileManager = fileManager;
@@ -38,8 +38,51 @@ export class QzoneCoordinator {
     this.scheduleTimes = new Set(scheduleTimes);
     this.clock = clock;
     this.onEvent = onEvent;
+    this.onActivityChange = onActivityChange;
     this.timer = null;
     this.queuedSlots = new Set();
+    this.scheduledActivities = new Map();
+    this.manualActivities = new Map();
+  }
+
+  activityFor(targetType, targetId) {
+    const key = `${targetType}:${targetId}`;
+    const activity = this.scheduledActivities.get(key) || this.manualActivities.get(key);
+    if (!activity) return null;
+    const { targetKey, ...publicActivity } = activity;
+    return { ...publicActivity };
+  }
+
+  setScheduledActivity(target, kind, stage, detail = {}) {
+    const key = `${target.type}:${target.id}`;
+    const previous = this.scheduledActivities.get(key);
+    if (stage === "queued" && previous && previous.stage !== "queued") return;
+    this.scheduledActivities.set(key, {
+      targetKey: key, kind, stage,
+      startedAt: previous?.startedAt || this.clock().toISOString(),
+      ...detail
+    });
+    this.onActivityChange();
+  }
+
+  clearScheduledActivity(target) {
+    if (!this.scheduledActivities.delete(`${target.type}:${target.id}`)) return;
+    this.onActivityChange();
+  }
+
+  setManualActivity(targetType, targetId, stage, detail = {}) {
+    const key = `${targetType}:${targetId}`;
+    const previous = this.manualActivities.get(key);
+    this.manualActivities.set(key, {
+      ...previous, targetKey: key, kind: "feed", stage, manual: true,
+      startedAt: previous?.startedAt || this.clock().toISOString(), ...detail
+    });
+    this.onActivityChange();
+  }
+
+  clearManualActivity(targetType, targetId) {
+    if (!this.manualActivities.delete(`${targetType}:${targetId}`)) return;
+    this.onActivityChange();
   }
 
   start() {
@@ -114,9 +157,17 @@ export class QzoneCoordinator {
       throw error;
     }
     this.assertManualTargetActive(targetType, targetId);
-    const page = await this.oneBot.getQzoneFeedPage(pageNum, count);
-    this.assertManualTargetActive(targetType, targetId);
-    return { pageNum, hasMore: page.hasMore, feeds: normalizeFeeds(page.feeds).slice(0, count) };
+    this.setManualActivity(targetType, targetId, "checking");
+    try {
+      const page = await this.oneBot.getQzoneFeedPage(pageNum, count);
+      this.assertManualTargetActive(targetType, targetId);
+      const feeds = normalizeFeeds(page.feeds).slice(0, count);
+      this.setManualActivity(targetType, targetId, "reading", { total: feeds.length });
+      return { pageNum, hasMore: page.hasMore, feeds };
+    } catch (error) {
+      this.clearManualActivity(targetType, targetId);
+      throw error;
+    }
   }
 
   async engageManualFeed({ targetType, targetId, messages = [], trigger, feed, type, content = "" }) {
@@ -133,6 +184,7 @@ export class QzoneCoordinator {
     }
     const action = parsed[0];
     this.assertManualTargetActive(targetType, targetId);
+    this.setManualActivity(targetType, targetId, "interacting");
     const result = await this.executeEngagement(action, `${targetType}:${targetId}`,
       () => this.assertManualTargetActive(targetType, targetId));
     if (result.status === "done") {
@@ -210,6 +262,7 @@ export class QzoneCoordinator {
       || ((!postDue || this.store.hasAction(`post:${slot}`))
         && (!scanDue || this.store.hasAction(`scan:${slot}`)))) return;
     this.queuedSlots.add(slot);
+    this.setScheduledActivity(target, postDue ? "post" : "feed", "queued");
     try {
       // Reserve the bound conversation at activation time. Both jobs from the
       // same hour then run as separate model turns, ahead of later chat wakes.
@@ -224,12 +277,14 @@ export class QzoneCoordinator {
       }
     } finally {
       this.queuedSlots.delete(slot);
+      this.clearScheduledActivity(target);
     }
   }
 
   async runScheduledPost(target, slot, runTurn = null) {
     const key = `post:${slot}`;
     if (!await this.store.claimAction(key, "scheduled-post", { target: `${target.type}:${target.id}` })) return;
+    this.setScheduledActivity(target, "post", "posting");
     this.onEvent({ type: "qzone-post-started", slot, at: this.clock().toISOString() });
     const useMcp = target.worker.codex?.supportsQqMcp === true;
     const context = useMcp ? this.scheduledPostContext(target, slot) : null;
@@ -280,12 +335,15 @@ export class QzoneCoordinator {
       }
       await this.store.finishAction(key, { status: "failed", message: `发动态失败或状态不确定：${error.message}` });
       this.onEvent({ type: "qzone-post-error", slot, error: error.message, at: this.clock().toISOString() });
+    } finally {
+      this.clearScheduledActivity(target);
     }
   }
 
   async runScheduledScan(target, slot, reservedRunTurn = null) {
     const key = `scan:${slot}`;
     if (!await this.store.claimAction(key, "feed-scan", { target: `${target.type}:${target.id}` })) return;
+    this.setScheduledActivity(target, "feed", "checking", { processed: 0, total: 0 });
     try {
       // The feed probe is plain OneBot I/O. A scheduled tick may already hold
       // its queue position, but no model turn runs without a new friend post.
@@ -297,6 +355,7 @@ export class QzoneCoordinator {
         this.onEvent({ type: "qzone-scan-skipped", slot, reason: "no-new-feed", at: this.clock().toISOString() });
         return;
       }
+      this.setScheduledActivity(target, "feed", "reading", { processed: 0, total: feedSnapshot.fresh.length });
       this.onEvent({ type: "qzone-scan-started", slot, count: feedSnapshot.fresh.length, at: this.clock().toISOString() });
       const scan = async (runTurn) => {
       const { fresh, observedIds, newestFeed, coverageGap } = feedSnapshot;
@@ -308,6 +367,7 @@ export class QzoneCoordinator {
       for (let offset = 0; offset < chronological.length; offset += FEED_DECISION_BATCH_SIZE) {
         this.assertTargetActive(target);
         const batch = chronological.slice(offset, offset + FEED_DECISION_BATCH_SIZE);
+        this.setScheduledActivity(target, "feed", "reading", { processed: offset, total: chronological.length });
         const useMcp = target.worker.codex?.supportsQqMcp === true;
         let context = useMcp ? this.scheduledFeedContext(target, batch, slot) : null;
         const prompt = [
@@ -331,6 +391,7 @@ export class QzoneCoordinator {
             comments += context.comments;
             failedActions += context.failedActions;
             for (const id of context.unavailableFeeds) unavailableFeeds.add(id);
+            this.setScheduledActivity(target, "feed", "reading", { processed: offset + batch.length, total: chronological.length });
             continue;
           }
           if (!context.submitted) {
@@ -344,6 +405,7 @@ export class QzoneCoordinator {
           if (!context.submitted) throw new Error("Agent 两次均未提交本批动态决定；断点未推进");
         }
         const decisions = useMcp ? context.decisions : parseEngagementDecisions(result.text, batch);
+        if (decisions.length) this.setScheduledActivity(target, "feed", "interacting", { processed: offset, total: chronological.length });
         for (const action of decisions) {
           this.assertTargetActive(target);
           try {
@@ -356,6 +418,7 @@ export class QzoneCoordinator {
             failedActions += 1;
           }
         }
+        this.setScheduledActivity(target, "feed", "reading", { processed: offset + batch.length, total: chronological.length });
       }
       this.assertTargetActive(target);
       await this.store.markFeeds(observedIds, { newestFeed });
@@ -373,6 +436,8 @@ export class QzoneCoordinator {
     } catch (error) {
       await this.store.finishAction(key, { status: "failed", message: `查看好友动态失败：${error.message}` });
       this.onEvent({ type: "qzone-scan-error", slot, error: error.message, at: this.clock().toISOString() });
+    } finally {
+      this.clearScheduledActivity(target);
     }
   }
 
@@ -422,6 +487,10 @@ export class QzoneCoordinator {
           return { pageNum: 1, hasMore: false, feeds: batch };
         },
         engageFeed: async (action) => {
+          this.setScheduledActivity(target, "feed", "interacting", {
+            processed: this.scheduledActivities.get(`${target.type}:${target.id}`)?.processed || 0,
+            total: this.scheduledActivities.get(`${target.type}:${target.id}`)?.total || batch.length
+          });
           const result = await this.engageScheduledFeed(target, action);
           if (result.status === "done" && result.action === "like") context.likes += 1;
           if (result.status === "done" && result.action === "comment") context.comments += 1;

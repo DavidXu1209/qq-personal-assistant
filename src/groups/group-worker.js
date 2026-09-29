@@ -978,6 +978,9 @@ export class GroupWorker {
   setLive(groupId, patch) {
     const previous = this.live.get(String(groupId)) || { status: "idle", text: "", error: null };
     this.live.set(String(groupId), { ...previous, ...patch });
+    if (patch.startedAt || (patch.status && patch.status !== "running")) {
+      this.qzone?.clearManualActivity("group", groupId);
+    }
   }
 
   workspaceDirFor(groupId) {

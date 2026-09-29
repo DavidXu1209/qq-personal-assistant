@@ -69,7 +69,11 @@ const state = {
       "200000002": group("200000002", "学习交流（演示）", {
         pendingMessages: [msg(13, "管理员（演示）", "新通知记得整理一下", {trust:"OWNER",senderId:"100000001"})],
         pendingCount: 1,
-        lastCompletedReply: { text:"明天 14:00 的讲座在活动中心\n通知整理完会发到这里",completedAt:now }
+        lastCompletedReply: { text:"明天 14:00 的讲座在活动中心\n通知整理完会发到这里",completedAt:now },
+        ...(process.env.DEMO_QZONE_ACTIVITY ? {
+          qzoneActivity: { kind:"feed", stage:"reading", processed:3, total:12, startedAt:now },
+          activeReply: { running:true, text:"正在处理 QQ 空间任务…", status:"running", trigger:"qzone-feed", startedAt:now }
+        } : {})
       })
     },
     privateChats: {

@@ -438,6 +438,69 @@ test("hourly feed check uses the selected persistent conversation and handles ea
   });
 });
 
+test("scheduled feed activity follows its bound conversation and clears after the check", async () => {
+  await withStore(async (store) => {
+    const targetId = "123456789";
+    await store.configure({ targetType: "private", targetId, autoEngageEnabled: true });
+    const now = new Date("2026-09-29T01:00:00Z");
+    const feed = { uin: "123456789", key: "new", time: Math.floor(now.getTime() / 1000) - 60, html: "新动态" };
+    await store.markFeeds(["123456789:old"], { newestFeed: { id: "123456789:old", timeMs: (feed.time - 60) * 1000 } });
+    let releaseQueue;
+    const queue = new Promise((resolve) => { releaseQueue = resolve; });
+    const stages = [];
+    let coordinator;
+    coordinator = new QzoneCoordinator({ store, clock: () => now,
+      groupStore: { listGroups: () => [] },
+      privateStore: { listGroups: () => [{ groupId: targetId, replyEnabled: true }] },
+      privateWorker: { async runQzoneSequence(_id, task) {
+        await queue;
+        await task(async () => ({ text: '{"actions":[]}' }));
+      } },
+      oneBot: { getQzoneFeedPage: async () => ({ feeds: [feed], hasMore: false }) },
+      onActivityChange: () => stages.push(coordinator.activityFor("private", targetId)?.stage || "idle")
+    });
+    const running = coordinator.tick();
+    assert.equal(coordinator.activityFor("private", targetId)?.stage, "queued");
+    assert.equal(coordinator.activityFor("group", targetId), null);
+    releaseQueue();
+    await running;
+    assert.deepEqual(stages, ["queued", "checking", "reading", "reading", "reading", "idle"]);
+    assert.equal(coordinator.activityFor("private", targetId), null);
+  });
+});
+
+test("simultaneous QQ Space activity remains isolated by conversation", () => {
+  const coordinator = new QzoneCoordinator();
+  const group = { type: "group", id: "200000002" };
+  const privateChat = { type: "private", id: "123456789" };
+  coordinator.setScheduledActivity(group, "feed", "reading", { processed: 2, total: 5 });
+  coordinator.setScheduledActivity(privateChat, "post", "posting");
+  assert.equal(coordinator.activityFor("group", group.id)?.stage, "reading");
+  assert.equal(coordinator.activityFor("private", privateChat.id)?.stage, "posting");
+  coordinator.clearScheduledActivity(group);
+  assert.equal(coordinator.activityFor("group", group.id), null);
+  assert.equal(coordinator.activityFor("private", privateChat.id)?.stage, "posting");
+});
+
+test("OWNER manual feed reading shows only in that live conversation until it ends", async () => {
+  await withStore(async (store) => {
+    const feed = { uin: "123456789", key: "new", time: 1789990000, html: "新动态" };
+    const coordinator = new QzoneCoordinator({ store,
+      groupStore: { listGroups: () => [{ groupId: "200000002", replyEnabled: true }] },
+      oneBot: { getQzoneFeedPage: async () => ({ feeds: [feed], hasMore: false }) }
+    });
+    const message = { senderId: OWNER_QQ_ID, messageId: "m1", text: "老代看看动态" };
+    const result = await coordinator.readManualFeeds({ targetType: "group", targetId: "200000002",
+      messages: [message], trigger: { reason: "mention", trust: "OWNER", messageId: "m1" } });
+    assert.equal(result.feeds.length, 1);
+    assert.deepEqual({ ...coordinator.activityFor("group", "200000002"), startedAt: null },
+      { kind: "feed", stage: "reading", manual: true, total: 1, startedAt: null });
+    assert.equal(coordinator.activityFor("private", "200000002"), null);
+    coordinator.clearManualActivity("group", "200000002");
+    assert.equal(coordinator.activityFor("group", "200000002"), null);
+  });
+});
+
 test("a same-hour post and feed check reserve one ordered sequence with separate prompts", async () => {
   await withStore(async (store) => {
     await store.configure({ targetType: "group", targetId: "200000002", autoPostEnabled: true, autoEngageEnabled: true });
@@ -577,6 +640,7 @@ test("an hourly check with no new feeds never reserves a conversation or calls A
     const old = { uin: "123456789", key: "seen", time: 1789950000, html: "之前看过的动态" };
     await store.markFeeds(["123456789:seen"], { newestFeed: { id: "123456789:seen", timeMs: old.time * 1000 } });
     const events = [];
+    const activities = [];
     const coordinator = new QzoneCoordinator({
       store,
       groupStore: { listGroups: () => [{ groupId: "200000002", replyEnabled: true }] },
@@ -586,10 +650,12 @@ test("an hourly check with no new feeds never reserves a conversation or calls A
         runQzoneTurn: async () => assert.fail("no new feed must not invoke AI")
       },
       oneBot: { getQzoneFeedPage: async () => ({ feeds: [old], hasMore: false }) },
-      onEvent: (event) => events.push(event.type)
+      onEvent: (event) => events.push(event.type),
+      onActivityChange: () => activities.push(coordinator.activityFor("group", "200000002")?.stage || "idle")
     });
     await coordinator.runScheduledScan(coordinator.boundTarget(), "2026-09-22T23:00");
     assert.deepEqual(events, ["qzone-scan-skipped"]);
+    assert.deepEqual(activities, ["checking", "idle"]);
     assert.match(store.publicState().events[0].message, /没有待处理的新好友动态/);
     assert.equal(store.publicState().lastSeenFeedId, "123456789:seen");
   });

@@ -709,6 +709,9 @@ export class PrivateWorker {
   setLive(userId, patch) {
     const previous = this.live.get(String(userId)) || { status: "idle", text: "", error: null };
     this.live.set(String(userId), { ...previous, ...patch });
+    if (patch.startedAt || (patch.status && patch.status !== "running")) {
+      this.qzone?.clearManualActivity("private", userId);
+    }
   }
 }
 

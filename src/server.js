@@ -294,7 +294,8 @@ const privateWorker = new PrivateWorker({
 const qzone = new QzoneCoordinator({
   store: qzoneStore, oneBot, fileManager, groupStore: store, privateStore,
   groupWorker: worker, privateWorker, scheduleTimes: qzoneScheduleTimes,
-  canRun: () => agentDispatchStore.isEnabled(), onEvent: recordEvent
+  canRun: () => agentDispatchStore.isEnabled(), onEvent: recordEvent,
+  onActivityChange: () => broadcast({ type: "qzone-activity", state: publicState() })
 });
 worker.qzone = qzone;
 privateWorker.qzone = qzone;
@@ -963,6 +964,7 @@ function publicState() {
     const view = toPublicGroupState(group, liveByGroup[group.groupId], groupMetadata[group.groupId]);
     return [group.groupId, {
       ...view,
+      qzoneActivity: qzone.activityFor("group", group.groupId),
       targetType: "group",
       targetId: group.groupId,
       conversationType: "AGENT_CHAT_GROUP",
@@ -975,6 +977,7 @@ function publicState() {
     const view = toPublicGroupState(conversation, liveByPrivate[conversation.groupId], { groupName: metadata.displayName || null });
     return [conversation.groupId, {
       ...view,
+      qzoneActivity: qzone.activityFor("private", conversation.groupId),
       userId: conversation.groupId,
       displayName: metadata.displayName || null,
       targetType: "private",

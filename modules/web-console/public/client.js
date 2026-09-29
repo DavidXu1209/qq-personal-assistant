@@ -252,7 +252,7 @@ function renderNavigation(all) {
   els.groupCount.textContent = String(all.length);
   els.agentGroupCount.textContent = String(groups.length);
   els.sourceCount.textContent = String(sources.length);
-  const signature = JSON.stringify(all.map((item) => [item.key, itemName(item), item.data.replyEnabled, item.data.pendingCount, item.data.retainedCount, item.data.visibleCount, item.data.pendingSubscriberCount, item.data.failedSubscriberCount, item.data.activeReply?.running, item.data.threadLock?.status, item.data.subscriptions?.length, item.key === selectedKey]));
+  const signature = JSON.stringify(all.map((item) => [item.key, itemName(item), item.data.replyEnabled, item.data.pendingCount, item.data.retainedCount, item.data.visibleCount, item.data.pendingSubscriberCount, item.data.failedSubscriberCount, item.data.activeReply?.running, item.data.qzoneActivity, item.data.threadLock?.status, item.data.subscriptions?.length, item.key === selectedKey]));
   if (signature === navigationSignature) return;
   navigationSignature = signature;
   els.groupList.innerHTML = groups.length ? groups.map(renderNavigationButton).join("") : '<p class="empty compact">尚未配置 Agent 群</p>';
@@ -268,6 +268,9 @@ function renderNavigationButton(item) {
   if (item.kind === "source") {
     status = data.failedSubscriberCount ? "需重试" : data.pendingSubscriberCount ? `${data.pendingSubscriberCount} 待完成` : "只读";
     tone = data.failedSubscriberCount ? "error" : data.pendingSubscriberCount ? "pending" : "idle";
+  } else if (data.qzoneActivity) {
+    status = qzoneActivityShort(data.qzoneActivity);
+    tone = "running";
   } else if (data.replyEnabled === false) {
     status = "不回复";
     tone = "idle";
@@ -301,6 +304,23 @@ function renderNavigationButton(item) {
     </button>`;
 }
 
+function qzoneActivityShort(activity) {
+  if (activity.stage === "queued") return "动态排队";
+  if (activity.kind === "post") return "发动态";
+  return ({ checking: "检查动态", reading: "看动态", interacting: "动态互动" })[activity.stage] || "看动态";
+}
+
+function qzoneActivityDetail(activity) {
+  if (activity.stage === "queued") return activity.kind === "post" ? "定时发动态已排队，等待当前任务结束" : "好友动态检查已排队，等待当前任务结束";
+  if (activity.kind === "post") return "老代正在决定是否发布 QQ 空间动态";
+  if (activity.stage === "checking") return activity.manual ? "老代正在读取 QQ 好友动态" : "正在检查是否有新好友动态；没有新动态就不会启动 AI";
+  if (activity.manual) return activity.stage === "interacting" ? "老代正在决定是否点赞或评论刚读到的动态" : `老代正在查看 QQ 好友动态${activity.total ? ` · 已读取 ${activity.total} 条` : ""}`;
+  const count = activity.total > 0 ? ` · 已查看 ${activity.processed || 0} / ${activity.total} 条` : "";
+  return activity.stage === "interacting"
+    ? `老代正在决定是否点赞或评论${count}`
+    : `老代正在查看 QQ 好友动态${count}`;
+}
+
 function renderServices() {
   const dispatchEnabled = state?.agentDispatch?.enabled !== false;
   els.agentDispatchToggle.checked = dispatchEnabled;
@@ -332,7 +352,7 @@ function renderSelected(item) {
   els.threadCreatedAt.textContent = source ? "—" : formatTime(data?.threadCreatedAt);
   els.lastActivityAt.textContent = formatTime(data?.lastActivityAt);
   els.pendingCount.textContent = String(source ? (data?.visibleCount || 0) : (data?.pendingCount || 0));
-  els.workerState.textContent = source ? "不运行" : (active.waiting ? "运行中 · 等待接话" : (active.uploading ? "传文件" : (active.running ? "回复中" : (data?.busy ? "处理中" : "空闲"))));
+  els.workerState.textContent = source ? "不运行" : (data?.qzoneActivity ? qzoneActivityShort(data.qzoneActivity) : (active.waiting ? "运行中 · 等待接话" : (active.uploading ? "传文件" : (active.running ? "回复中" : (data?.busy ? "处理中" : "空闲")))));
   els.triggerState.textContent = source ? "禁止触发" : formatTrigger(data?.pendingTrigger?.reason);
   els.selectedGroupId.textContent = !item ? "QQ AGENT" : item.kind === "group" ? `AGENT 群 · ${data.targetId}` : item.kind === "private" ? `AGENT 私聊 · ${data.targetId}` : `只读通知源 · ${data.groupId}`;
   els.selectedGroupName.textContent = item ? itemName(item) : "选择一个会话";
@@ -342,9 +362,10 @@ function renderSelected(item) {
     : `${data.subscriptionCount || 0} 个会话订阅 · 当前没有待发送通知`;
   else if (!replyEnabled) els.activityStatus.textContent = "本会话不回复 · 消息继续记录，重新开启后继续处理";
   else if (state?.agentDispatch?.enabled === false) els.activityStatus.textContent = "总开关已暂停 · 消息继续记录";
+  else if (data.qzoneActivity) els.activityStatus.textContent = qzoneActivityDetail(data.qzoneActivity);
   else if (active.uploading) els.activityStatus.textContent = active.text || "QQ 正在上传文件…";
   else if (active.waiting) els.activityStatus.textContent = "接话运行中 · 新消息立即续接，连续两分钟无人发消息后结束";
-  else if (active.running) els.activityStatus.textContent = active.trigger === "subscription_auto" ? "WorkBuddy 正在整理自动通知…" : "WorkBuddy 正在回复…";
+  else if (active.running) els.activityStatus.textContent = active.trigger === "subscription_auto" ? "WorkBuddy 正在整理自动通知…" : active.trigger === "qzone-feed" ? "老代正在查看 QQ 好友动态…" : active.trigger === "qzone-post" ? "老代正在处理 QQ 空间发布…" : "WorkBuddy 正在回复…";
   else if (data.threadLock?.status === "external_writer") els.activityStatus.textContent = "会话被其他写入端占用，网关会自动重试";
   else if (data.threadLock?.status === "error") els.activityStatus.textContent = "会话暂未锁定，网关会自动重试";
   else if (data.lastError || active.error) els.activityStatus.textContent = "本次回复失败，消息仍保留";
@@ -533,7 +554,7 @@ function renderConversation(item) {
 
   const data = item.data;
   const active = getActiveReply(data);
-  const relevantState = { lastCompletedReply: data.lastCompletedReply, pendingMessages: data.pendingMessages, processing: data.processing, activeReply: active, lastError: data.lastError, failedDelivery: data.failedDelivery };
+  const relevantState = { lastCompletedReply: data.lastCompletedReply, pendingMessages: data.pendingMessages, processing: data.processing, activeReply: active, qzoneActivity: data.qzoneActivity, lastError: data.lastError, failedDelivery: data.failedDelivery };
   const signature = `${item.key}:${JSON.stringify(relevantState)}`;
   if (renderedKey === item.key && conversationSignature === signature) return;
   const blocks = [];
@@ -545,9 +566,13 @@ function renderConversation(item) {
     const label = item.kind === "private" ? "尚未处理的私聊消息" : "尚未处理的群消息";
     blocks.push(`<section class="conversation-section pending-section"><div class="section-label"><span>${label}</span><span>${data.pendingMessages.length} 条${cutoff ? " · 回复成功后提交" : ""}</span></div><div class="message-stack">${data.pendingMessages.map((message) => renderMessage(message, Number(message.sequence || 0) <= cutoff)).join("")}</div></section>`);
   }
+  if (data.qzoneActivity) {
+    const activity = data.qzoneActivity;
+    blocks.push(`<section class="conversation-section active-section" role="status"><div class="section-label"><span>QQ 空间实时状态</span><span class="running-label"><i></i>${escapeHtml(qzoneActivityShort(activity))}</span></div><article class="bubble agent live"><div class="bubble-text">${escapeHtml(qzoneActivityDetail(activity))}</div></article></section>`);
+  }
   if (active.waiting) {
     blocks.push('<section class="conversation-section active-section" role="status"><div class="section-label"><span>老代正在等待接话</span><span class="running-label"><i></i>运行中</span></div><article class="bubble agent live"><div class="bubble-text">新消息到达会立即继续判断<br>连续两分钟无人发消息后才结束；等待期间不调用模型</div></article></section>');
-  } else if (active.running) {
+  } else if (active.running && !(["qzone-feed", "qzone-post"].includes(active.trigger) && data.qzoneActivity)) {
     blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>WorkBuddy 正在回复</span><span class="running-label"><i></i>实时生成</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>老代 · WorkBuddy</strong><span>${escapeHtml(formatTrigger(active.trigger))}</span></div><div class="bubble-text">${escapeHtml(active.text || "正在思考……")}<span class="stream-caret" aria-hidden="true"></span></div></article></section>`);
   }
   if (active.uploading) {
@@ -1241,7 +1266,7 @@ function formatTime(value) {
 }
 
 function formatTrigger(value) {
-  return ({ mention: "被 @ / 私聊触发", followup: "新消息接话", message_count: "消息数量触发", scheduled: "定时触发", subscription_auto: "自动通知订阅", retry: "重试", control: "控制指令" })[value] || "—";
+  return ({ mention: "被 @ / 私聊触发", followup: "新消息接话", message_count: "消息数量触发", scheduled: "定时触发", subscription_auto: "自动通知订阅", "qzone-feed": "查看好友动态", "qzone-post": "发布 QQ 空间动态", retry: "重试", control: "控制指令" })[value] || "—";
 }
 
 function formatRole(value) {
