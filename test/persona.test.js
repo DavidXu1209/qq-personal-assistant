@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PersonaStore } from "../src/persona/persona-store.js";
+import { getAgentName, setAgentName } from "../src/security/policy.js";
+import { normalizeOneBotGroupMessage } from "../src/qq/message-normalizer.js";
 
 const projectDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -109,4 +111,51 @@ test("legacy social-state files are neither read nor rewritten after migration",
   assert.equal(await readFile(paths.statePath, "utf8"), legacy);
   assert.equal(await readFile(paths.relationshipsPath, "utf8"), legacy);
   assert.doesNotMatch(JSON.stringify(store.publicState()), /secretOldState/);
+});
+
+test("nickname persists and changes both persona identity and text wake word", async (t) => {
+  t.after(() => setAgentName("老代"));
+  const { store, paths } = await fixture(t);
+  assert.equal(await store.setName("小代"), "小代");
+  assert.equal(getAgentName(), "小代");
+  assert.match(store.systemPromptForClient(), /你是小代/);
+  assert.match(store.systemPromptForClient(), /你在 QQ 中叫“小代”/);
+  assert.doesNotMatch(store.systemPromptForClient(), /你是老代|你在 QQ 中叫“老代”/);
+  const incoming = (text) => normalizeOneBotGroupMessage({ self_id: "2", user_id: "3", group_id: "4", message: [{ type: "text", data: { text } }] });
+  assert.equal(incoming("小代在吗").mentionedBot, true);
+  assert.equal(incoming("老代在吗").mentionedBot, false);
+  assert.equal(normalizeOneBotGroupMessage({ self_id: "2", user_id: "3", group_id: "4", message: [{ type: "at", data: { qq: "2" } }] }).mentionedBot, true);
+  const restored = new PersonaStore(paths);
+  await restored.init();
+  assert.equal(restored.name(), "小代");
+  await assert.rejects(store.setName("不 合法"), /昵称/);
+});
+
+test("edited catchphrases stay pending until next Shanghai 04:00 and can be cleared", async (t) => {
+  let now = new Date("2026-09-27T19:59:00Z");
+  const { paths, store } = await fixture(t);
+  store.clock = () => now;
+  const initial = store.catchphrases();
+  const updated = [{ text: "这么好", when: "觉得有趣时自然说" }];
+  const stage = await store.stageCatchphrases(updated);
+  assert.equal(stage.activateAt, "2026-09-27T20:00:00.000Z");
+  assert.deepEqual(store.catchphrases(), initial);
+  assert.deepEqual(store.publicState().pendingCatchphrases, updated);
+  assert.equal(store.pendingCatchphrasesDue("2026-09-27T19:59:59Z"), false);
+  assert.equal(store.pendingCatchphrasesDue("2026-09-27T20:00:00Z"), true);
+  const restored = new PersonaStore(paths);
+  await restored.init();
+  assert.deepEqual(restored.publicState().pendingCatchphrases, updated);
+  await restored.publishDailyUpdate({ cutoff: "2026-09-27T20:00:00Z" });
+  assert.deepEqual(restored.catchphrases(), updated);
+  assert.equal(restored.publicState().pendingCatchphrases, null);
+  assert.match(restored.systemPromptForClient(), /- 这么好：觉得有趣时自然说/);
+  now = new Date("2026-09-27T20:01:00Z");
+  restored.clock = () => now;
+  await restored.stageCatchphrases([]);
+  assert.equal(restored.publicState().pendingCatchphrasesAt, "2026-09-28T20:00:00.000Z");
+  await restored.publishDailyUpdate({ cutoff: "2026-09-28T20:00:00Z" });
+  assert.deepEqual(restored.catchphrases(), []);
+  assert.doesNotMatch(restored.systemPromptForClient(), /固定口头禅/);
+  await assert.rejects(restored.stageCatchphrases([{ text: "重复", when: "一" }, { text: "重复", when: "二" }]), /重复/);
 });

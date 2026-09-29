@@ -390,6 +390,25 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, publicState());
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/qq/persona/name") {
+    const body = parseJson(rawBody);
+    let name;
+    try { name = await personaStore.setName(body.name); }
+    catch (error) { throw new HttpError(400, error.message); }
+    codex.setSystemPrompt?.(personaStore.systemPromptForClient());
+    recordEvent({ type: "persona-name-updated", at: new Date().toISOString() });
+    sendJson(res, 200, { name, persona: personaStore.publicState() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/qq/persona/catchphrases") {
+    const body = parseJson(rawBody);
+    let staged;
+    try { staged = await personaStore.stageCatchphrases(body.catchphrases); }
+    catch (error) { throw new HttpError(400, error.message); }
+    recordEvent({ type: "persona-catchphrases-staged", count: staged.entries.length, activateAt: staged.activateAt, at: new Date().toISOString() });
+    sendJson(res, 200, { ...staged, persona: personaStore.publicState() });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/qq/stickers") {
     sendJson(res, 200, { ...stickerManager.publicState(), labeling: stickerLabelingState(), curation: stickerCuration.snapshot() });
     return;

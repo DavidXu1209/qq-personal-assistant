@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { getAgentName } from "../security/policy.js";
 
 const MEMBER_ID = /^\d{5,14}$/u;
 const MESSAGE_ID = /^-?\d+$/u;
@@ -96,7 +97,7 @@ async function checkedRequest(oneBot, path, body) {
 
 async function currentRole(oneBot, groupId, botId) {
   const member = await oneBot.getGroupMemberInfo(groupId, botId, { noCache: true });
-  if (String(member?.user_id || "") !== String(botId)) deny("无法确认老代当前在本群的身份；不执行管理操作。");
+  if (String(member?.user_id || "") !== String(botId)) deny(`无法确认${getAgentName()}当前在本群的身份；不执行管理操作。`);
   return String(member.role || "member").toLowerCase();
 }
 
@@ -130,7 +131,7 @@ export async function readGroupManagement({ oneBot, groupId, botId, args = {} })
       wholeBan: info?.group_all_shut ?? null
     };
   }
-  if (role !== "admin" && role !== "owner") deny("老代目前不是这个群的管理员，群管理详情不可用。");
+  if (role !== "admin" && role !== "owner") deny(`${getAgentName()}目前不是这个群的管理员，群管理详情不可用。`);
   const body = { group_id: Number(groupId) };
   if (section === "members") {
     const data = await checkedRequest(oneBot, "/get_group_member_list", body);
@@ -147,7 +148,7 @@ export async function readGroupManagement({ oneBot, groupId, botId, args = {} })
 async function ordinaryTarget(oneBot, groupId, value, { botId, ownerId, allowSelf = false, allowAdmin = false } = {}) {
   const userId = requireId(value, "目标成员");
   if (userId === String(ownerId)) deny("不能对 OWNER 执行群管理处罚或改动。");
-  if (userId === String(botId) && !allowSelf) deny("不能对老代自己执行此操作。");
+  if (userId === String(botId) && !allowSelf) deny(`不能对${getAgentName()}自己执行此操作。`);
   const member = await oneBot.getGroupMemberInfo(groupId, userId, { noCache: true });
   if (String(member?.user_id || "") !== userId) deny("无法确认目标仍是本群成员。");
   if (userId !== String(botId) && String(member.role || "member") !== "member"
@@ -166,10 +167,10 @@ export async function manageGroup({ oneBot, groupId, botId, ownerId, ownerMessag
   const action = String(args.action || "");
   if (!GROUP_MANAGEMENT_ACTIONS.includes(action)) deny("未知或未实现的群管理操作。");
   const role = await currentRole(oneBot, groupId, botId);
-  if (!["admin", "owner"].includes(role)) deny("老代目前不是这个群的管理员，管理操作已自动关闭。");
+  if (!["admin", "owner"].includes(role)) deny(`${getAgentName()}目前不是这个群的管理员，管理操作已自动关闭。`);
   const ownerAuthorized = await explicitOwnerAuthorization(oneBot, groupId, ownerMessage, action, args);
   if (OWNER_ONLY.has(action) && !ownerAuthorized) deny("此操作影响较大，只有 OWNER 在当前群直接明确要求才能授权；解除成员禁言请写 QQ 号、@该成员或回复该成员的消息。");
-  if (OWNER_ROLE_ONLY.has(action) && role !== "owner") deny("QQ 只允许群主执行此操作；老代当前只是管理员。");
+  if (OWNER_ROLE_ONLY.has(action) && role !== "owner") deny(`QQ 只允许群主执行此操作；${getAgentName()}当前只是管理员。`);
   const body = { group_id: Number(groupId) };
   let path;
   let summary;

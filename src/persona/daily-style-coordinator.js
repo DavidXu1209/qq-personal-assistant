@@ -125,7 +125,7 @@ export class DailyStyleCoordinator {
     const cutoff = latestStyleCutoff(this.clock());
     if (this.state.retryAfter && this.clock().getTime() < Date.parse(this.state.retryAfter)) return Promise.resolve();
     const due = this.state.samples.filter((sample) => sample.at < cutoff);
-    if (!due.length) return Promise.resolve();
+    if (!due.length && !this.persona.pendingCatchphrasesDue?.(cutoff)) return Promise.resolve();
     const ids = new Set(due.map((sample) => sample.id));
     this.state.status = "waiting";
     this.publish();
@@ -134,8 +134,8 @@ export class DailyStyleCoordinator {
       this.state.status = "running";
       this.publish();
       await this.save();
-      const rules = await this.summarize(due);
-      await this.persona.publishStyleRules(rules, { summarizedAt: this.clock().toISOString() });
+      const rules = due.length ? await this.summarize(due) : null;
+      await this.persona.publishDailyUpdate({ rules, cutoff, summarizedAt: this.clock().toISOString() });
       this.codex.setSystemPrompt?.(this.persona.systemPromptForClient());
       this.state.samples = this.state.samples.filter((sample) => !ids.has(sample.id));
       this.state.lastCompletedCutoff = cutoff;

@@ -201,7 +201,7 @@ export function createLiveConversationTools({
       if (!context.readCalled) return answer("请先调用 read_messages 确认当前会话。", true);
       const messageId = String(args.message_id || "").trim();
       if (!/^-?\d+$/u.test(messageId) || !store.getSentMessage(targetId, messageId)) {
-        return answer("只能撤回当前会话中由老代成功发出、尚未撤回的消息 ID。", true);
+        return answer("只能撤回当前会话中由机器人成功发出、尚未撤回的消息 ID。", true);
       }
       try {
         store.assertReplyEnabled(targetId);
@@ -371,7 +371,7 @@ export function createLiveConversationTools({
             targetType, targetId, trigger, messages: currentQzoneMessages(),
             turnId: active.turnId, text: action.directive, allowAutonomousOwnerPost: true
           });
-          if (!result.notices?.some((notice) => notice.startsWith("已用老代的小号发布"))) {
+          if (!result.notices?.some((notice) => notice.includes("的小号发布 QQ 空间动态"))) {
             throw new Error(result.notices?.join("；") || "QQ 空间发布未确认");
           }
         }

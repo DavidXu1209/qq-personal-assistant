@@ -54,7 +54,7 @@
                 <label for="groupCandidate">选择机器人已加入的群
                   <select id="groupCandidate" required disabled><option value="">正在读取群列表…</option></select>
                 </label>
-                <p class="field-note">只显示尚未管理、且不是只读通知源的群。加入后群成员可按该会话的权限触发老代。</p>
+                <p class="field-note">只显示尚未管理、且不是只读通知源的群。加入后群成员可按该会话的权限触发<span data-agent-name>老代</span>。</p>
                 <p id="groupFormStatus" class="form-status" role="status" aria-live="polite"></p>
                 <button id="reloadGroupCandidatesButton" class="mini-button" type="button">刷新群列表</button>
                 <div class="compact-actions"><button id="saveGroupButton" class="button primary" type="submit" disabled>加入白名单</button><button id="cancelGroupButton" class="button ghost" type="button">取消</button></div>
@@ -131,10 +131,26 @@
           </details>
 
           <details id="personaDetails" class="session-details agent-settings-details persona-details">
-            <summary>老代人格 <span id="personaSummary">所有会话共用</span></summary>
+            <summary><span data-agent-name>老代</span>人格 <span id="personaSummary">所有会话共用</span></summary>
             <div class="agent-settings-form persona-form">
               <p class="field-note">所有群聊、私聊和动态共用同一份人格；不再计算或注入每轮精力、熟悉度和关系状态。固定核心可在本机私人人格文件中编辑。</p>
               <p class="field-note">每天 04:00 的发言风格总结仍会更新共用人格。</p>
+              <form id="personaNameForm" class="persona-editor" autocomplete="off">
+                <label for="personaNameInput">AI 昵称
+                  <input id="personaNameInput" name="name" minlength="2" maxlength="16" required spellcheck="false" />
+                </label>
+                <p class="field-note">保存后，文字喊名、机器人称谓和下一轮人格提示会一起更新。真正 @机器人仍按 QQ 账号识别。</p>
+                <p id="personaNameStatus" class="form-status" role="status" aria-live="polite"></p>
+                <button id="savePersonaNameButton" class="button primary" type="submit" disabled>保存昵称</button>
+              </form>
+              <form id="personaCatchphraseForm" class="persona-editor">
+                <div class="persona-learning-head"><span>固定口头禅</span><strong id="personaCatchphraseStatus">当前已生效</strong></div>
+                <p class="field-note">填写短句和适用场景，格式与现有人格一致。增减后保存为待生效版本；下次北京时间 04:00 与每日总结一起发布。</p>
+                <div id="personaCatchphraseRows" class="persona-catchphrase-rows"></div>
+                <button id="addPersonaCatchphraseButton" class="button ghost" type="button">添加口头禅</button>
+                <p id="personaCatchphraseSaveStatus" class="form-status" role="status" aria-live="polite"></p>
+                <button id="savePersonaCatchphraseButton" class="button primary" type="submit" disabled>保存，等待 04:00 生效</button>
+              </form>
               <section class="persona-learning" aria-label="自动学习 OWNER 的表达方式">
                 <div class="persona-learning-head">
                   <span>每天 04:00 的表达总结</span>
@@ -238,8 +254,8 @@
             <p class="qzone-visibility">可见范围：所有人可见。手动和定时新发的动态都一样；已有动态不会自动改动。</p>
             <label for="qzoneTarget">定时任务使用的 Agent 会话</label>
             <select id="qzoneTarget" name="target"><option value="">暂不绑定</option></select>
-            <p class="qzone-help">你直接触发受管理的可写会话后，老代可酌情发动态；其他人不能授权。自动任务只使用这里选定的会话。</p>
-            <label class="qzone-check"><input id="qzoneAutoPost" type="checkbox" /> <span>早 / 中 / 晚让老代自行决定是否发动态</span></label>
+            <p class="qzone-help">你直接触发受管理的可写会话后，<span data-agent-name>老代</span>可酌情发动态；其他人不能授权。自动任务只使用这里选定的会话。</p>
+            <label class="qzone-check"><input id="qzoneAutoPost" type="checkbox" /> <span>早 / 中 / 晚让<span data-agent-name>老代</span>自行决定是否发动态</span></label>
             <p id="qzonePostTimes" class="qzone-help"></p>
             <label class="qzone-check"><input id="qzoneAutoEngage" type="checkbox" /> <span>每小时查看新好友动态，按喜好决定点赞或评论</span></label>
             <p id="qzoneLastSeenTime" class="qzone-help"></p>

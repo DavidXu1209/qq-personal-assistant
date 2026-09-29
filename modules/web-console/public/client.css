@@ -538,7 +538,7 @@ h2 { font-size: 17px; line-height: 1.25; letter-spacing: -0.015em; }
   font-size: 10px;
   gap: 5px;
 }
-.compact-form input, .subscription-form input, .subscription-form select, .agent-settings-form select {
+.compact-form input, .subscription-form input, .subscription-form select, .agent-settings-form select, .agent-settings-form input {
   width: 100%;
   min-height: 35px;
   border: 1px solid var(--border-strong);
@@ -549,7 +549,7 @@ h2 { font-size: 17px; line-height: 1.25; letter-spacing: -0.015em; }
   background: #12171c;
   font-size: 11px;
 }
-.compact-form input:focus, .subscription-form input:focus, .subscription-form select:focus, .agent-settings-form select:focus { border-color: #4da7e8; }
+.compact-form input:focus, .subscription-form input:focus, .subscription-form select:focus, .agent-settings-form select:focus, .agent-settings-form input:focus { border-color: #4da7e8; }
 .agent-settings-details summary span {
   max-width: 155px;
   overflow: hidden;
@@ -565,6 +565,13 @@ h2 { font-size: 17px; line-height: 1.25; letter-spacing: -0.015em; }
 .agent-settings-form .field-note { color: var(--quiet); font-size: 9px; font-weight: 400; line-height: 1.45; }
 .compact-form .field-note { margin: 0; color: var(--quiet); font-size: 9px; line-height: 1.45; }
 .persona-learning { display: grid; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #0d1216; gap: 6px; }
+.persona-editor { display: grid; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #0d1216; gap: 7px; }
+.persona-editor .field-note, .persona-editor .form-status { margin: 0; }
+.persona-editor .button { min-height: 32px; }
+.persona-catchphrase-rows { display: grid; gap: 7px; }
+.persona-catchphrase-row { display: grid; border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px; gap: 6px; }
+.persona-catchphrase-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
+.persona-catchphrase-row-head .button { min-height: 26px; padding: 3px 8px; }
 .persona-learning-head { display: flex; align-items: center; justify-content: space-between; color: #b8c6d1; font-size: 10px; gap: 8px; }
 .persona-learning-head strong { color: var(--accent); font-size: 9px; font-weight: 650; text-align: right; }
 .persona-owner-style-rules { display: grid; margin: 0; padding-left: 16px; color: #d1dbe3; font-size: 9px; line-height: 1.55; gap: 3px; }

@@ -11,6 +11,8 @@ const els = Object.fromEntries([
   "agentContextTokenLimit", "agentWorkingMode", "agentPermissionMode", "agentCalendarRemindersEnabled", "agentModeExplanation",
   "agentSettingsHint", "agentSettingsStatus", "saveAgentSettingsButton",
   "personaDetails", "personaSummary", "personaOwnerStyleSummary", "personaOwnerStyleRules", "personaPromptPreview",
+  "personaNameForm", "personaNameInput", "personaNameStatus", "savePersonaNameButton",
+  "personaCatchphraseForm", "personaCatchphraseRows", "personaCatchphraseStatus", "personaCatchphraseSaveStatus", "addPersonaCatchphraseButton", "savePersonaCatchphraseButton",
   "stickerLabelDetails", "stickerLabelSummary", "stickerLabelForm", "stickerLabelModel", "stickerLabelStatus", "saveStickerLabelButton",
   "addSubscriptionButton", "subscriptionForm", "subscriptionId", "subscriptionSource", "subscriptionIntake",
   "subscriptionDelayLabel", "subscriptionDelay", "subscriptionEnabled", "cancelSubscriptionButton",
@@ -37,6 +39,9 @@ let stickerEditingId = "";
 let stickerEditDraft = "";
 let stickerActionSavingId = "";
 let qzoneDirty = false;
+let personaNameDirty = false;
+let personaCatchphraseDirty = false;
+let personaCatchphraseSignature = "";
 let replySwitchSaving = false;
 let groupCandidatesLoading = false;
 const scrollState = new Map();
@@ -68,6 +73,7 @@ async function refresh() {
 }
 
 function render() {
+  document.querySelectorAll("[data-agent-name]").forEach((node) => { node.textContent = agentName(); });
   const all = allItems();
   if (!all.some((item) => item.key === selectedKey)) {
     rememberCurrentScroll();
@@ -88,6 +94,8 @@ function render() {
   renderQzone();
   renderView();
 }
+
+function agentName() { return state?.persona?.name || "老代"; }
 
 function renderView() {
   const galleryOpen = location.hash === "#stickers";
@@ -136,7 +144,7 @@ function renderStickerGallery() {
   els.stickerLibraryButton.classList.toggle("selected", !blacklist);
   els.stickerBlacklistButton.classList.toggle("selected", blacklist);
   els.stickerLibraryHelp.textContent = blacklist
-    ? "黑名单中的表情不再识别、入库或供老代发送。移出可恢复收录；彻底删除会忘记所有指纹，下次收到按新表情处理。旧记录可能没有预览。"
+    ? `黑名单中的表情不再识别、入库或供${agentName()}发送。移出可恢复收录；彻底删除会忘记所有指纹，下次收到按新表情处理。旧记录可能没有预览。`
     : "移入黑名单会保留预览和备注，阻止再次收录；彻底删除则忘记该表情，下次收到重新识别。";
   const awaitingAi = Number(stickers.awaitingAi || 0);
   const awaitingCommit = Number(stickers.awaitingCommit || 0);
@@ -312,13 +320,13 @@ function qzoneActivityShort(activity) {
 
 function qzoneActivityDetail(activity) {
   if (activity.stage === "queued") return activity.kind === "post" ? "定时发动态已排队，等待当前任务结束" : "好友动态检查已排队，等待当前任务结束";
-  if (activity.kind === "post") return "老代正在决定是否发布 QQ 空间动态";
-  if (activity.stage === "checking") return activity.manual ? "老代正在读取 QQ 好友动态" : "正在检查是否有新好友动态；没有新动态就不会启动 AI";
-  if (activity.manual) return activity.stage === "interacting" ? "老代正在决定是否点赞或评论刚读到的动态" : `老代正在查看 QQ 好友动态${activity.total ? ` · 已读取 ${activity.total} 条` : ""}`;
+  if (activity.kind === "post") return `${agentName()}正在决定是否发布 QQ 空间动态`;
+  if (activity.stage === "checking") return activity.manual ? `${agentName()}正在读取 QQ 好友动态` : "正在检查是否有新好友动态；没有新动态就不会启动 AI";
+  if (activity.manual) return activity.stage === "interacting" ? `${agentName()}正在决定是否点赞或评论刚读到的动态` : `${agentName()}正在查看 QQ 好友动态${activity.total ? ` · 已读取 ${activity.total} 条` : ""}`;
   const count = activity.total > 0 ? ` · 已查看 ${activity.processed || 0} / ${activity.total} 条` : "";
   return activity.stage === "interacting"
-    ? `老代正在决定是否点赞或评论${count}`
-    : `老代正在查看 QQ 好友动态${count}`;
+    ? `${agentName()}正在决定是否点赞或评论${count}`
+    : `${agentName()}正在查看 QQ 好友动态${count}`;
 }
 
 function renderServices() {
@@ -365,7 +373,7 @@ function renderSelected(item) {
   else if (data.qzoneActivity) els.activityStatus.textContent = qzoneActivityDetail(data.qzoneActivity);
   else if (active.uploading) els.activityStatus.textContent = active.text || "QQ 正在上传文件…";
   else if (active.waiting) els.activityStatus.textContent = "接话运行中 · 新消息立即续接，连续两分钟无人发消息后结束";
-  else if (active.running) els.activityStatus.textContent = active.trigger === "subscription_auto" ? "WorkBuddy 正在整理自动通知…" : active.trigger === "qzone-feed" ? "老代正在查看 QQ 好友动态…" : active.trigger === "qzone-post" ? "老代正在处理 QQ 空间发布…" : "WorkBuddy 正在回复…";
+  else if (active.running) els.activityStatus.textContent = active.trigger === "subscription_auto" ? "WorkBuddy 正在整理自动通知…" : active.trigger === "qzone-feed" ? `${agentName()}正在查看 QQ 好友动态…` : active.trigger === "qzone-post" ? `${agentName()}正在处理 QQ 空间发布…` : "WorkBuddy 正在回复…";
   else if (data.threadLock?.status === "external_writer") els.activityStatus.textContent = "会话被其他写入端占用，网关会自动重试";
   else if (data.threadLock?.status === "error") els.activityStatus.textContent = "会话暂未锁定，网关会自动重试";
   else if (data.lastError || active.error) els.activityStatus.textContent = "本次回复失败，消息仍保留";
@@ -417,7 +425,7 @@ function renderAgentSettings(item) {
     : readOnlyMode
       ? "Plan / Ask 当前轮始终只读；仍可修改并保存执行权限，切回 Agent 后按所选权限生效。"
       : item.kind === "group" && els.agentPermissionMode.value === "dangerFullAccess"
-        ? "保存后从下一轮起生效；当前群的所有成员都能通过老代操作本机和发送本机文件。"
+        ? `保存后从下一轮起生效；当前群的所有成员都能通过${agentName()}操作本机和发送本机文件。`
         : "保存后从下一轮起生效；历史 thread 不变。本轮身份规则仍可继续收窄权限。";
 }
 
@@ -425,7 +433,22 @@ function renderPersona(item) {
   if (!item || item.kind === "source") return;
   const persona = state?.persona || {};
   const publishedStyle = persona.publishedStyle || {};
-  els.personaSummary.textContent = "所有会话共用";
+  els.personaSummary.textContent = `${agentName()} · 所有会话共用`;
+  if (!personaNameDirty && els.personaNameInput.value !== agentName()) els.personaNameInput.value = agentName();
+  els.savePersonaNameButton.disabled = !personaNameDirty;
+  const active = persona.catchphrases || [];
+  const pending = persona.pendingCatchphrases;
+  const editable = pending ?? active;
+  const signature = JSON.stringify([editable, persona.pendingCatchphrasesAt]);
+  if (!personaCatchphraseDirty && signature !== personaCatchphraseSignature) {
+    els.personaCatchphraseRows.innerHTML = editable.map((entry, index) => catchphraseRow(entry, index)).join("") || '<p class="field-note">当前没有口头禅。可以添加，或保存空列表以清除已生效的口头禅。</p>';
+    personaCatchphraseSignature = signature;
+  }
+  els.personaCatchphraseStatus.textContent = pending === null
+    ? `已生效 ${active.length} 条`
+    : `已生效 ${active.length} 条 · 待 ${formatTime(persona.pendingCatchphrasesAt)} 更新 ${pending.length} 条`;
+  els.savePersonaCatchphraseButton.disabled = !personaCatchphraseDirty;
+  els.addPersonaCatchphraseButton.disabled = els.personaCatchphraseRows.querySelectorAll(".persona-catchphrase-row").length >= 20;
   els.personaOwnerStyleSummary.textContent = publishedStyle.summarizedAt
     ? `最近更新 ${formatTime(publishedStyle.summarizedAt)}` : "尚未总结";
   const learnedRules = publishedStyle.rules || [];
@@ -433,6 +456,14 @@ function renderPersona(item) {
     ? learnedRules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join("")
     : "<li>尚无已发布的表达规则。</li>";
   els.personaPromptPreview.textContent = persona.promptPreview || "—";
+}
+
+function catchphraseRow(entry = { text: "", when: "" }, index = 0) {
+  return `<div class="persona-catchphrase-row">
+    <div class="persona-catchphrase-row-head"><span>口头禅 ${index + 1}</span><button class="button ghost" type="button" data-remove-catchphrase="${index}" aria-label="删除口头禅 ${index + 1}">删除</button></div>
+    <label>短句<input name="catchphraseText" value="${escapeHtml(entry.text)}" maxlength="40" required placeholder="例如：这么好" /></label>
+    <label>使用场景<input name="catchphraseWhen" value="${escapeHtml(entry.when)}" maxlength="240" required placeholder="什么时候自然地说这句" /></label>
+  </div>`;
 }
 
 function renderStickerLabelSettings() {
@@ -506,7 +537,7 @@ function updateParameterExplanation(item) {
     ? "WorkBuddy 当前只公开全局 6 档，未提供逐模型能力矩阵；不支持的档位会由模型忽略。"
     : (model?.description || "");
   const permissionWarning = item.kind === "group" && permission?.value === "dangerFullAccess"
-    ? "；高风险：群内任何成员触发老代后都可读取、修改本机文件并发送本机文件到本群，通知源仍保持只读"
+    ? `；高风险：群内任何成员触发${agentName()}后都可读取、修改本机文件并发送本机文件到本群，通知源仍保持只读`
     : "";
   els.agentModeExplanation.innerHTML = [
     `<p><strong>${escapeHtml(mode?.label || "工作模式")}</strong>${escapeHtml(mode?.description || "")}</p>`,
@@ -555,7 +586,7 @@ function renderConversation(item) {
   const data = item.data;
   const active = getActiveReply(data);
   const relevantState = { lastCompletedReply: data.lastCompletedReply, pendingMessages: data.pendingMessages, processing: data.processing, activeReply: active, qzoneActivity: data.qzoneActivity, lastError: data.lastError, failedDelivery: data.failedDelivery };
-  const signature = `${item.key}:${JSON.stringify(relevantState)}`;
+  const signature = `${item.key}:${agentName()}:${JSON.stringify(relevantState)}`;
   if (renderedKey === item.key && conversationSignature === signature) return;
   const blocks = [];
   if (data.lastCompletedReply?.text) {
@@ -571,12 +602,12 @@ function renderConversation(item) {
     blocks.push(`<section class="conversation-section active-section" role="status"><div class="section-label"><span>QQ 空间实时状态</span><span class="running-label"><i></i>${escapeHtml(qzoneActivityShort(activity))}</span></div><article class="bubble agent live"><div class="bubble-text">${escapeHtml(qzoneActivityDetail(activity))}</div></article></section>`);
   }
   if (active.waiting) {
-    blocks.push('<section class="conversation-section active-section" role="status"><div class="section-label"><span>老代正在等待接话</span><span class="running-label"><i></i>运行中</span></div><article class="bubble agent live"><div class="bubble-text">新消息到达会立即继续判断<br>连续两分钟无人发消息后才结束；等待期间不调用模型</div></article></section>');
+    blocks.push(`<section class="conversation-section active-section" role="status"><div class="section-label"><span>${escapeHtml(agentName())}正在等待接话</span><span class="running-label"><i></i>运行中</span></div><article class="bubble agent live"><div class="bubble-text">新消息到达会立即继续判断<br>连续两分钟无人发消息后才结束；等待期间不调用模型</div></article></section>`);
   } else if (active.running && !(["qzone-feed", "qzone-post"].includes(active.trigger) && data.qzoneActivity)) {
-    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>WorkBuddy 正在回复</span><span class="running-label"><i></i>实时生成</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>老代 · WorkBuddy</strong><span>${escapeHtml(formatTrigger(active.trigger))}</span></div><div class="bubble-text">${escapeHtml(active.text || "正在思考……")}<span class="stream-caret" aria-hidden="true"></span></div></article></section>`);
+    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>WorkBuddy 正在回复</span><span class="running-label"><i></i>实时生成</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>${escapeHtml(agentName())} · WorkBuddy</strong><span>${escapeHtml(formatTrigger(active.trigger))}</span></div><div class="bubble-text">${escapeHtml(active.text || "正在思考……")}<span class="stream-caret" aria-hidden="true"></span></div></article></section>`);
   }
   if (active.uploading) {
-    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>QQ 文件发送</span><span class="running-label"><i></i>上传中</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>老代</strong><span>群文件</span></div><div class="bubble-text">${escapeHtml(active.text || "QQ 正在上传文件……")}</div></article></section>`);
+    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>QQ 文件发送</span><span class="running-label"><i></i>上传中</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>${escapeHtml(agentName())}</strong><span>群文件</span></div><div class="bubble-text">${escapeHtml(active.text || "QQ 正在上传文件……")}</div></article></section>`);
   }
   if ((data.lastError || active.error) && !active.running) {
     blocks.push('<section class="failure-state" role="status"><strong>本次回复没有完成</strong><span>待处理消息和通知订阅游标均未提交，可以安全重试。</span></section>');
@@ -690,7 +721,7 @@ function renderMessage(message, processing = false, source = false) {
 }
 
 function renderReply(text) {
-  return `<article class="bubble agent"><div class="bubble-meta"><strong>老代 · WorkBuddy</strong><span>已发送到 QQ</span></div><div class="bubble-text">${escapeHtml(text)}</div></article>`;
+  return `<article class="bubble agent"><div class="bubble-meta"><strong>${escapeHtml(agentName())} · WorkBuddy</strong><span>已发送到 QQ</span></div><div class="bubble-text">${escapeHtml(text)}</div></article>`;
 }
 
 function getActiveReply(data) {
@@ -893,7 +924,7 @@ els.stickerGalleryGrid.addEventListener("click", async (event) => {
       stickerEditDraft = "";
     }
     setStickerGalleryActionStatus(action === "forget" ? "已彻底忘记所有指纹；下次收到会重新识别入库。QQ 客户端收藏未改动。"
-      : action === "restore" ? result.result?.restored ? "已恢复到表情库，老代可再次使用。" : "已解除黑名单；没有可恢复的完整副本，下次收到会重新识别。"
+      : action === "restore" ? result.result?.restored ? `已恢复到表情库，${agentName()}可再次使用。` : "已解除黑名单；没有可恢复的完整副本，下次收到会重新识别。"
       : "已移入黑名单，预览和备注保留；以后不再自动收录，可随时恢复。", "success");
   } catch (error) {
     setStickerGalleryActionStatus(`操作失败：${error.message}`, "error");
@@ -1017,7 +1048,7 @@ els.agentSettingsForm.addEventListener("submit", async (event) => {
   const enablingGroupFullAccess = item.kind === "group"
     && els.agentPermissionMode.value === "dangerFullAccess"
     && item.data.codexConfig?.permissionMode !== "dangerFullAccess";
-  if (enablingGroupFullAccess && !window.confirm("开启完全访问后，当前群的所有成员都能通过老代操作整台 Mac，并发送本机任意位置的文件到本群。只读通知源不会获得该权限。确认开启吗？")) return;
+  if (enablingGroupFullAccess && !window.confirm(`开启完全访问后，当前群的所有成员都能通过${agentName()}操作整台 Mac，并发送本机任意位置的文件到本群。只读通知源不会获得该权限。确认开启吗？`)) return;
   els.saveAgentSettingsButton.disabled = true;
   els.saveAgentSettingsButton.textContent = "保存中…";
   els.agentSettingsStatus.textContent = "正在保存";
@@ -1048,6 +1079,86 @@ els.agentSettingsForm.addEventListener("submit", async (event) => {
   } finally {
     els.saveAgentSettingsButton.textContent = "保存会话参数";
     els.saveAgentSettingsButton.disabled = !settingsDirty;
+  }
+});
+els.personaNameInput.addEventListener("input", () => {
+  personaNameDirty = true;
+  els.personaNameStatus.textContent = "有未保存的昵称";
+  els.personaNameStatus.className = "form-status";
+  els.savePersonaNameButton.disabled = false;
+});
+els.personaNameForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!personaNameDirty) return;
+  els.savePersonaNameButton.disabled = true;
+  try {
+    const response = await api("/api/qq/persona/name", {
+      method: "POST", body: JSON.stringify({ name: els.personaNameInput.value.trim() })
+    });
+    state.persona = response.persona;
+    personaNameDirty = false;
+    els.personaNameStatus.textContent = "已保存；新消息按新昵称唤醒，下一轮模型也使用新称谓。";
+    els.personaNameStatus.className = "form-status";
+    render();
+  } catch (error) {
+    els.personaNameStatus.textContent = error.message;
+    els.personaNameStatus.className = "form-status error";
+    els.savePersonaNameButton.disabled = false;
+  }
+});
+function catchphraseDraft() {
+  return [...els.personaCatchphraseRows.querySelectorAll(".persona-catchphrase-row")].map((row) => ({
+    text: row.querySelector('[name="catchphraseText"]').value.trim(),
+    when: row.querySelector('[name="catchphraseWhen"]').value.trim()
+  }));
+}
+function setCatchphraseDraft(entries) {
+  els.personaCatchphraseRows.innerHTML = entries.map((entry, index) => catchphraseRow(entry, index)).join("")
+    || '<p class="field-note">保存空列表后，下次 04:00 将清除全部口头禅。</p>';
+  personaCatchphraseDirty = true;
+  els.personaCatchphraseSaveStatus.textContent = "有未保存的修改";
+  els.personaCatchphraseSaveStatus.className = "form-status";
+  els.savePersonaCatchphraseButton.disabled = false;
+  els.addPersonaCatchphraseButton.disabled = entries.length >= 20;
+}
+els.personaCatchphraseRows.addEventListener("input", () => {
+  personaCatchphraseDirty = true;
+  els.personaCatchphraseSaveStatus.textContent = "有未保存的修改";
+  els.personaCatchphraseSaveStatus.className = "form-status";
+  els.savePersonaCatchphraseButton.disabled = false;
+});
+els.personaCatchphraseRows.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-remove-catchphrase]");
+  if (!button) return;
+  const entries = catchphraseDraft();
+  entries.splice(Number(button.dataset.removeCatchphrase), 1);
+  setCatchphraseDraft(entries);
+});
+els.addPersonaCatchphraseButton.addEventListener("click", () => {
+  const entries = catchphraseDraft();
+  if (entries.length >= 20) return;
+  entries.push({ text: "", when: "" });
+  setCatchphraseDraft(entries);
+  els.personaCatchphraseRows.querySelector(".persona-catchphrase-row:last-child input")?.focus();
+});
+els.personaCatchphraseForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!personaCatchphraseDirty) return;
+  els.savePersonaCatchphraseButton.disabled = true;
+  try {
+    const response = await api("/api/qq/persona/catchphrases", {
+      method: "POST", body: JSON.stringify({ catchphrases: catchphraseDraft() })
+    });
+    state.persona = response.persona;
+    personaCatchphraseDirty = false;
+    personaCatchphraseSignature = "";
+    els.personaCatchphraseSaveStatus.textContent = `已保存；${formatTime(response.persona.pendingCatchphrasesAt)} 生效。`;
+    els.personaCatchphraseSaveStatus.className = "form-status";
+    renderPersona(currentTarget());
+  } catch (error) {
+    els.personaCatchphraseSaveStatus.textContent = error.message;
+    els.personaCatchphraseSaveStatus.className = "form-status error";
+    els.savePersonaCatchphraseButton.disabled = false;
   }
 });
 els.stickerLabelModel.addEventListener("change", () => {

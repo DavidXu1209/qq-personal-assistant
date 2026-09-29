@@ -38,7 +38,7 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   };
   const gate = new AgentTaskGate();
   const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
-    persona: { getPublishedStyleRules: () => [...published], async publishStyleRules(rules) { published = rules; } }, codex, gate, clock: () => now });
+    persona: { getPublishedStyleRules: () => [...published], async publishDailyUpdate({ rules }) { published = rules; } }, codex, gate, clock: () => now });
   await daily.init();
   assert.equal(await daily.capture(plainPayload("这么好"), ownerMessage(1)), true);
   assert.equal(await daily.capture(plainPayload("这么好"), ownerMessage(1)), false);
@@ -77,7 +77,7 @@ test("the next daily summary revises the prior snapshot instead of appending a s
       return { text: JSON.stringify({ styleRules: [prompts.length === 1 ? "短句优先" : "短句优先，偶尔分行"] }) };
     }, async deleteThread() {} };
   const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
-    persona: { getPublishedStyleRules: () => [...published], async publishStyleRules(rules) { published = rules; } },
+    persona: { getPublishedStyleRules: () => [...published], async publishDailyUpdate({ rules }) { published = rules; } },
     codex, gate: new AgentTaskGate(), clock: () => now });
   await daily.init();
   await daily.capture(plainPayload("好"), ownerMessage(1));
@@ -101,7 +101,7 @@ test("failed isolated summary retains samples and retries only after backoff", a
   const codex = { model: "test", async startThread(options) { attempts++; return options.threadId; },
     async runTurn() { return { text: "not json" }; }, async deleteThread() {} };
   const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
-    persona: { async publishStyleRules() { throw new Error("must not publish"); } }, codex,
+    persona: { async publishDailyUpdate() { throw new Error("must not publish"); } }, codex,
     gate: new AgentTaskGate(), clock: () => now });
   await daily.init();
   await daily.capture(plainPayload("先说结论"), ownerMessage(9));
@@ -114,4 +114,27 @@ test("failed isolated summary retains samples and retries only after backoff", a
   now = new Date("2026-09-27T21:02:00Z");
   await daily.tick();
   assert.equal(attempts, 2);
+});
+
+test("due catchphrases publish at 04:00 without samples or a new AI thread", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "qq-style-catchphrase-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let now = new Date("2026-09-27T20:01:00Z");
+  let pending = true;
+  let published = null;
+  let prompt = null;
+  const codex = { model: "test", setSystemPrompt(value) { prompt = value; },
+    async startThread() { throw new Error("must not start AI"); } };
+  const persona = {
+    pendingCatchphrasesDue: () => pending,
+    async publishDailyUpdate(value) { published = value; pending = false; },
+    systemPromptForClient: () => "updated persona"
+  };
+  const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
+    persona, codex, gate: new AgentTaskGate(), clock: () => now });
+  await daily.init();
+  await daily.tick();
+  assert.deepEqual(published, { rules: null, cutoff: "2026-09-27T20:00:00.000Z", summarizedAt: now.toISOString() });
+  assert.equal(prompt, "updated persona");
+  assert.equal(daily.snapshot().lastCompletedCutoff, "2026-09-27T20:00:00.000Z");
 });

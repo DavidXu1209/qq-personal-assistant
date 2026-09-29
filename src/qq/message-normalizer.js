@@ -1,4 +1,4 @@
-import { AGENT_QQ_NAME, trustForSender } from "../security/policy.js";
+import { getAgentName, trustForSender } from "../security/policy.js";
 import { extractUrls } from "./link-reader.js";
 
 // QQNT PicSubType: 1=custom, 2=hot, 4=smart recommendation, 7=related recommendation.
@@ -27,7 +27,7 @@ export function normalizeOneBotGroupPoke(payload, { now = () => new Date() } = {
     senderRole: normalizeSenderRole(payload?.sender?.role),
     timestamp: timestamp.toISOString(),
     displayTime: formatLocalTime(timestamp),
-    text: targetId === selfId ? `戳了戳${AGENT_QQ_NAME}` : `戳了戳 QQ ${targetId}`,
+    text: targetId === selfId ? `戳了戳${getAgentName()}` : `戳了戳 QQ ${targetId}`,
     mentions: [],
     imageRefs: [],
     images: [],
@@ -58,7 +58,7 @@ function normalizeOneBotMessage(payload, { now, messageType }) {
   const renderedText = renderOneBotMessageText(segments, { selfId });
   const fallbackText = stripCqCodes(String(payload?.raw_message || ""));
   const text = renderedText.trim() || fallbackText || describeNonTextSegments(segments);
-  const mentionedBot = explicitlyMentionedBot || text.includes(AGENT_QQ_NAME);
+  const mentionedBot = explicitlyMentionedBot || text.includes(getAgentName());
 
   return {
     messageId: String(payload?.message_id ?? payload?.message_seq ?? `${groupId}:${senderId}:${timestamp.toISOString()}`),
@@ -116,7 +116,7 @@ export function renderOneBotMessageText(segments, { selfId = "", mentionNames = 
     if (segment?.type !== "at") return "";
     const userId = asId(segment.data?.qq ?? segment.data?.id ?? segment.data?.uin);
     if (!userId) return "";
-    if (userId === asId(selfId)) return `@${AGENT_QQ_NAME}（QQ ${userId}）`;
+    if (userId === asId(selfId)) return `@${getAgentName()}（QQ ${userId}）`;
     if (userId.toLowerCase() === "all") return "@全体成员";
     const displayName = String(mentionNames[userId] || mentionNameFromSegment(segment) || "").trim();
     return displayName ? `@${displayName}（QQ ${userId}）` : `@QQ ${userId}`;
