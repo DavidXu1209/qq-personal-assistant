@@ -190,6 +190,12 @@ export class WorkBuddyClient {
         } else {
           result = handleQqMcpTool({ name: input.name, args: input.arguments, context: active.qqToolContext, queued: active.mcpActions });
         }
+        // A successful QQ action is output too, even when the model does not
+        // emit a visible text delta. Reads and SDK progress are not output.
+        if (active && !result.isError && [
+          "send_message", "send_file", "send_image", "send_reaction", "poke_member",
+          "post_qzone", "engage_qzone_feed", "manage_group", "recall_message"
+        ].includes(input.name)) this.touchTurn(active);
         if (active && !active.qqToolContext?.liveMode && !result.isError && input.name === "send_message") {
           const queuedMessage = active.mcpActions.find((action) => action.kind === "message");
           if (queuedMessage) active.onDelta?.(queuedMessage.text, queuedMessage.text);
@@ -371,12 +377,10 @@ export class WorkBuddyClient {
         mcpActions: [],
         mcpChain: Promise.resolve(),
         timeout: null,
+        silenceLimitMs: Math.max(1, Number(turnTimeoutMs) || this.timeoutMs),
         progressTimeout: null,
         timeoutInProgress: false,
       };
-      active.timeout = setTimeout(() => {
-        this.timeoutTurn(active).catch((error) => this.finishTurn(active, error));
-      }, Math.max(1, Number(turnTimeoutMs) || this.timeoutMs));
       this.activeByThread.set(active.threadId, active);
       this.activeByTurn.set(active.turnId, active);
       this.activeByGroup.set(active.groupId, active);
@@ -394,8 +398,11 @@ export class WorkBuddyClient {
         : "WorkBuddy 长时间无进展；已中断本轮，待处理消息仍保留";
       this.timeoutTurn(active, reason)
         .catch((error) => this.finishTurn(active, error));
-    }, Math.max(1, Number(compacting ? this.compactionTimeoutMs : this.idleTimeoutMs)
-      || (compacting ? 6 : 3) * 60 * 1000));
+    }, Math.max(1, Math.min(
+      Number(compacting ? this.compactionTimeoutMs : this.idleTimeoutMs)
+        || (compacting ? 6 : 3) * 60 * 1000,
+      Number(active.silenceLimitMs) || this.timeoutMs
+    )));
     active.progressTimeout.unref?.();
   }
 
@@ -579,12 +586,7 @@ export class WorkBuddyClient {
       return;
     }
 
-    if (message.method === "turn/progress") {
-      const params = message.params || {};
-      const active = this.activeByTurn.get(String(params.turnId || ""));
-      if (active && String(params.threadId || "") === active.threadId) this.touchTurn(active);
-      return;
-    }
+    if (message.method === "turn/progress") return;
 
     if (message.method === "turn/completed") {
       const params = message.params || {};
