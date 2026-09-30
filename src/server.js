@@ -282,6 +282,7 @@ const taskGate = new AgentTaskGate();
 const dailyStyle = new DailyStyleCoordinator({
   filePath: personaStyleSamplesPath, workspaceRoot: personaStyleWorkspaceRoot,
   persona: personaStore, codex, gate: taskGate,
+  getModel: () => stickerLabelSettingsStore.snapshot().model,
   canRun: () => agentDispatchStore.isEnabled(), onEvent: recordEvent
 });
 await dailyStyle.init();
@@ -497,7 +498,7 @@ async function handleApi(req, res, url) {
     const body = parseJson(rawBody);
     const model = String(body.model || "").trim();
     if (!codexModels.some((item) => item.model === model)) {
-      throw new HttpError(400, "请选择当前 WorkBuddy 账号真实可用的识图模型");
+      throw new HttpError(400, "请选择当前 Agent 账号真实可用的临时任务模型");
     }
     const labeling = await stickerLabelSettingsStore.setModel(model);
     recordEvent({ type: "sticker-label-settings-updated", model, at: new Date().toISOString() });

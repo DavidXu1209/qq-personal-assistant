@@ -168,7 +168,7 @@ function renderStickerGallery() {
   els.stickerRecognitionStatus.innerHTML = `<span class="status-dot" aria-hidden="true"></span><span>${escapeHtml(statusText)}</span>`;
   const curation = stickers.curation;
   const curationEl = document.getElementById("stickerCurationStatus");
-  let curationText = "每天 05:00（北京时间）检查；超过 100 个时用当前识图模型筛选到 80 个。";
+  let curationText = "每天 05:00（北京时间）检查；超过 100 个时用临时任务共用模型筛选到 80 个。";
   if (curation?.status === "queued") curationText = "表情筛选已排队，等待 Agent 总开关开启；消息继续收集。";
   else if (curation?.status === "waiting") curationText = "表情筛选等待正在进行的任务结束；新的回复和识别任务正在排队，消息继续收集。";
   else if (curation?.status === "running") curationText = `正在筛选：已看 ${curation.progress?.reviewed || 0}/${curation.beforeCount || 0} 个${curation.progress?.phase === "selection" ? "，正在决定保留名单" : ""}。回复和新表情识别暂时排队；消息继续收集。`;
@@ -465,7 +465,7 @@ function catchphraseRow(entry = { text: "", when: "" }, index = 0) {
 function renderStickerLabelSettings() {
   const labeling = state?.qq?.stickers?.labeling || { model: "hy3" };
   const model = modelInfo(labeling.model);
-  els.stickerLabelSummary.textContent = `${model?.displayName || labeling.model || "hy3"} · 临时会话`;
+  els.stickerLabelSummary.textContent = `${model?.displayName || labeling.model || "hy3"} · 三项共用`;
   const nextSignature = JSON.stringify([labeling.model, state?.ai?.availableModels]);
   if (!stickerLabelDirty && stickerLabelSignature !== nextSignature) {
     const models = [...(state?.ai?.availableModels || [])];
@@ -1168,7 +1168,7 @@ els.stickerLabelForm.addEventListener("submit", async (event) => {
     state.qq.stickers.labeling = response;
     stickerLabelDirty = false;
     stickerLabelSignature = "";
-    els.stickerLabelStatus.textContent = "已保存；从下一批新表情开始使用。";
+    els.stickerLabelStatus.textContent = "已保存；三项任务从下次启动时使用，新旧会话模型不变。";
     renderStickerLabelSettings();
     scheduleRefresh();
   } catch (error) {
@@ -1176,7 +1176,7 @@ els.stickerLabelForm.addEventListener("submit", async (event) => {
     els.stickerLabelStatus.className = "form-status error";
     stickerLabelDirty = true;
   } finally {
-    els.saveStickerLabelButton.textContent = "保存识图模型";
+    els.saveStickerLabelButton.textContent = "保存共用模型";
     els.saveStickerLabelButton.disabled = !stickerLabelDirty;
   }
 });

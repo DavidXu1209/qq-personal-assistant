@@ -30,6 +30,7 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   let now = new Date("2026-09-27T19:50:00Z");
   const calls = [];
   let published = ["上一版：说话比较直接"];
+  let sharedModel = "hy3";
   const codex = {
     model: "test-model",
     async startThread(options) { calls.push(["start", options]); return options.threadId; },
@@ -38,7 +39,8 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   };
   const gate = new AgentTaskGate();
   const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
-    persona: { getPublishedStyleRules: () => [...published], async publishDailyUpdate({ rules }) { published = rules; } }, codex, gate, clock: () => now });
+    persona: { getPublishedStyleRules: () => [...published], async publishDailyUpdate({ rules }) { published = rules; } },
+    codex, gate, getModel: () => sharedModel, clock: () => now });
   await daily.init();
   assert.equal(await daily.capture(plainPayload("这么好"), ownerMessage(1)), true);
   assert.equal(await daily.capture(plainPayload("这么好"), ownerMessage(1)), false);
@@ -47,6 +49,8 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   assert.equal(calls.length, 0);
   const release = gate.tryEnter();
   now = new Date("2026-09-27T20:01:00Z");
+  sharedModel = "deepseek-v4.1-flash";
+  assert.equal(daily.snapshot().model, sharedModel);
   const running = daily.tick();
   assert.equal(gate.blocked, true);
   assert.equal(calls.length, 0);
@@ -54,6 +58,8 @@ test("daily summary waits for active replies, publishes once, cleans ephemeral t
   await running;
   assert.deepEqual(published, ["短句直接，不爱用逗号"]);
   assert.deepEqual(calls.map(([kind]) => kind), ["start", "turn", "delete"]);
+  assert.equal(calls[0][1].model, sharedModel);
+  assert.equal(calls[1][1].model, sharedModel);
   assert.equal(calls[0][1].ephemeral, true);
   assert.equal(calls[1][1].workingMode, "agent");
   assert.equal(calls[1][1].prefetchQqMessages, false);

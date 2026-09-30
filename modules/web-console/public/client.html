@@ -166,16 +166,17 @@
           </details>
 
           <details id="stickerLabelDetails" class="session-details agent-settings-details">
-            <summary>表情识别 <span id="stickerLabelSummary">hy3 · 临时会话</span></summary>
+            <summary>临时任务模型 <span id="stickerLabelSummary">hy3 · 三项共用</span></summary>
             <form id="stickerLabelForm" class="agent-settings-form">
-              <label for="stickerLabelModel">识图模型
+              <label for="stickerLabelModel">共用模型
                 <select id="stickerLabelModel" required></select>
               </label>
               <div class="parameter-explanation">
-                <p><strong>不积累上下文</strong>每批新表情都会新建一次独立只读会话；识图可与聊天回复并行，若回复仍在进行，识别结果会等回复发送完成后再入库。临时会话和工作区随后自动清理。</p>
+                <p><strong>同时用于三项任务</strong>新表情识图、每天 04:00 聊天风格总结、每天 05:00 超过 100 个表情时的筛选。仅影响之后启动的临时任务，不改变群聊、私聊和动态会话的模型。</p>
+                <p><strong>不积累上下文</strong>各任务使用独立临时会话，完成后清理。识图可与聊天回复并行；已识别的表情会等当前回复发送完成后再入库。风格总结和表情筛选会等待正在进行的任务结束。</p>
               </div>
               <p id="stickerLabelStatus" class="form-status" role="status" aria-live="polite"></p>
-              <button id="saveStickerLabelButton" class="button primary full-button" type="submit" disabled>保存识图模型</button>
+              <button id="saveStickerLabelButton" class="button primary full-button" type="submit" disabled>保存共用模型</button>
             </form>
           </details>
 

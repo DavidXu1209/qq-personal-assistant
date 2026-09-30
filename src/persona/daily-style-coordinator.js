@@ -62,8 +62,8 @@ function chunksForSamples(samples) {
 }
 
 export class DailyStyleCoordinator {
-  constructor({ filePath, workspaceRoot, persona, codex, gate, canRun = () => true, clock = () => new Date(), onEvent = () => {} } = {}) {
-    Object.assign(this, { filePath: resolve(filePath), workspaceRoot: resolve(workspaceRoot), persona, codex, gate, canRun, clock, onEvent });
+  constructor({ filePath, workspaceRoot, persona, codex, gate, getModel = () => codex?.model, canRun = () => true, clock = () => new Date(), onEvent = () => {} } = {}) {
+    Object.assign(this, { filePath: resolve(filePath), workspaceRoot: resolve(workspaceRoot), persona, codex, gate, getModel, canRun, clock, onEvent });
     this.state = { version: 1, samples: [], recentIds: [], lastCompletedCutoff: null, lastSummaryAt: null, status: "idle", error: null, retryAfter: null };
     this.saveChain = Promise.resolve();
     this.timer = null;
@@ -92,6 +92,7 @@ export class DailyStyleCoordinator {
   snapshot() {
     return {
       schedule: "04:00", timezone: "Asia/Shanghai", status: this.state.status,
+      model: String(this.getModel() || this.codex?.model || "auto"),
       pendingSamples: this.state.samples.length, lastSummaryAt: this.state.lastSummaryAt,
       lastCompletedCutoff: this.state.lastCompletedCutoff, error: this.state.error,
       gate: this.gate.snapshot()
@@ -157,7 +158,7 @@ export class DailyStyleCoordinator {
     const jobId = randomUUID();
     const cwd = join(this.workspaceRoot, jobId);
     const threadHint = `persona-style-${jobId}`;
-    const options = { model: this.codex.model, effort: "auto", contextTokenLimit: "auto", workingMode: "agent", cwd };
+    const options = { model: String(this.getModel() || this.codex.model || "auto"), effort: "auto", contextTokenLimit: "auto", workingMode: "agent", cwd };
     let threadId = null;
     let failure = null;
     let rules = null;
