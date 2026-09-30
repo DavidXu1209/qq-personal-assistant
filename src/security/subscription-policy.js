@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { AGENT_QQ_ID, OWNER_QQ_ID, appendStickerCatalog, baseThreadInstructions, getAgentName, trustForSender } from "./policy.js";
+import { AGENT_QQ_ID, OWNER_QQ_ID, appendStickerCatalog, baseThreadInstructions, getAgentName, privatePermissionNotice, trustForSender } from "./policy.js";
 import { messageResourceHints } from "../qq/resource-hints.js";
 import { messageLabel, replyReference } from "./reply-reference.js";
 
@@ -211,11 +211,7 @@ export function buildPrivateTurnPrompt(messages, contexts, {
   if (includeBaseInstructions) {
     lines.push("本持久会话固定说明（首次建立或上下文压缩后刷新）：", baseThreadInstructions(), "");
   }
-  if (security?.allowQqFiles) {
-    lines.push("【本轮权限】OWNER 已直接触发，可按明确任务使用完整 Agent，并发送本轮允许的本机图片。私聊不能戳一戳。");
-  } else {
-    lines.push("【本轮权限】只读；不得修改外部状态或发送本机文件、图片。私聊不能戳一戳。");
-  }
+  lines.push(`【本轮权限】${privatePermissionNotice(security)}`);
   lines.push(`【本轮新增私聊消息】${clean(displayName) || userId} (${userId})`);
   for (const message of messages || []) {
     lines.push(`[${message.displayTime || message.timestamp || "时间未知"}] ${clean(message.senderName) || userId} (${message.senderId}) [${trustForSender(message.senderId)}]${messageLabel(message, clean)}: ${clean(message.text) || "（无文字）"}`);

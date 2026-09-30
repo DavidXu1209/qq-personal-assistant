@@ -11,6 +11,7 @@ import { PersonaStore } from "./persona/persona-store.js";
 import { DailyStyleCoordinator } from "./persona/daily-style-coordinator.js";
 import { ThreadReservationManager } from "./codex/thread-reservations.js";
 import { GroupWorker } from "./groups/group-worker.js";
+import { GroupMemberDirectory } from "./qq/group-member-directory.js";
 import { toPublicGroupState } from "./groups/group-state.js";
 import { TriggerManager } from "./groups/trigger-manager.js";
 import { QqFileManager } from "./qq/file-manager.js";
@@ -161,6 +162,19 @@ const qzoneStore = new QzoneStore({ filePath: qzoneStorePath });
 await qzoneStore.init();
 const sourceTargetCollisions = subscriptionStore.sourceGroupIds().filter((groupId) => allowedGroups.includes(groupId));
 if (sourceTargetCollisions.length) throw new Error(`A QQ group cannot be both AGENT_CHAT_GROUP and READ_ONLY_SOURCE_GROUP: ${sourceTargetCollisions.join(", ")}`);
+
+const groupMemberDirectory = new GroupMemberDirectory({ rootDir: groupWorkspaceRoot });
+for (const group of store.listGroups().filter((item) => allowedGroups.includes(item.groupId))) {
+  const retained = [...(group.recentTurns || []).flatMap((turn) => turn.messages || []), ...(group.pendingMessages || [])];
+  await groupMemberDirectory.initGroup(group.groupId, retained)
+    .catch((error) => console.warn(`QQ member directory initialization failed for ${group.groupId}: ${error.message}`));
+}
+const sourceMemberSnapshot = subscriptionStore.snapshot();
+for (const groupId of subscriptionStore.sourceGroupIds()) {
+  const source = sourceMemberSnapshot.sources[groupId];
+  await groupMemberDirectory.initGroup(groupId, [...(source?.messages || []), ...(source?.recentMessages || [])])
+    .catch((error) => console.warn(`QQ source member directory initialization failed for ${groupId}: ${error.message}`));
+}
 
 const configuredPrivateIds = uniqueStrings([OWNER_QQ_ID, ...targetAllowlist.list("private"), ...subscriptionStore.privateTargetIds()]);
 const privateStore = new SessionStore({ filePath: privateSessionStorePath, defaultCodexConfig });
@@ -635,6 +649,8 @@ async function handleApi(req, res, url) {
     const metadata = { groupId, groupName: String(info.group_name || "").trim().slice(0, 100) || null };
     groupMetadata[groupId] = metadata;
     availableGroupMetadata[groupId] = metadata;
+    await groupMemberDirectory.initGroup(groupId)
+      .catch((error) => console.warn(`QQ member directory initialization failed for ${groupId}: ${error.message}`));
     recordEvent({ type: "group-target-created", groupId, at: new Date().toISOString() });
     sendJson(res, 201, { status: "created", groupId, groupName: metadata.groupName });
     return;
@@ -661,6 +677,8 @@ async function handleApi(req, res, url) {
     assertTarget(targetType, targetId);
     if (allowedGroups.includes(sourceGroupId)) throw new HttpError(400, "AGENT_CHAT_GROUP cannot be used as a READ_ONLY_SOURCE_GROUP");
     const result = await subscriptionStore.upsertSubscription({ ...body, targetType, targetId, sourceGroupId });
+    await groupMemberDirectory.initGroup(sourceGroupId)
+      .catch((error) => console.warn(`QQ source member directory initialization failed for ${sourceGroupId}: ${error.message}`));
     oneBot.setReadOnlyGroupIds(subscriptionStore.sourceGroupIds());
     await mediaManager.removeMessages(result.removedMessages);
     await refreshOneSourceMetadata(sourceGroupId).catch(() => {});
@@ -698,6 +716,8 @@ async function handleOneBotEvent(payload) {
   if (isSource ? subscriptionStore.isSourceRecalled(message.groupId, message.messageId)
     : store.isRecalled(message.groupId, message.messageId)) return { status: "ignored", reason: "Message was recalled" };
   if (rememberMessage(`group:${message.messageId}`)) return { status: "ok", duplicate: true };
+  await groupMemberDirectory.record(message, payload.sender)
+    .catch((error) => console.warn(`QQ member directory update failed for ${message.groupId}: ${error.message}`));
   await hydrateMessage(payload, message);
   if (isSource) {
     const result = await subscriptionStore.appendSourceMessage(message);

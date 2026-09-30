@@ -6,6 +6,7 @@ import { handleQqMcpTool } from "../src/qq/mcp-actions.js";
 import { WorkBuddyClient } from "../src/workbuddy/client.js";
 import { QqMessageReader } from "../src/qq/message-reader.js";
 import { buildMcpTurnPrompt, buildTurnPrompt, gatewaySystemInstructions } from "../src/security/policy.js";
+import { buildPrivateTurnPrompt } from "../src/security/subscription-policy.js";
 
 const context = {
   targetType: "group",
@@ -64,13 +65,28 @@ test("normal QQ MCP advertises the same complete fixed catalog for every convers
 
 test("stable gateway rules distinguish live MCP sends from structured AUTO and scheduled Space turns", () => {
   const rules = gatewaySystemInstructions();
-  assert.match(rules, /普通可写聊天的 QQ 动作只通过当前可用的 qq_gateway MCP 工具/);
+  assert.match(rules, /普通聊天的 QQ 动作只通过当前可用的 qq_gateway MCP 工具/);
+  assert.match(rules, /本机执行权限为只读时，仍可用获准的 QQ 工具向当前会话发文字或表情/);
   assert.match(rules, /最终文字不会代发/);
   assert.match(rules, /AUTO 订阅轮次先用 read_source_messages/);
   assert.match(rules, /由网关按结构化输出发送，不用普通聊天的 send_message/);
   assert.match(rules, /聊天和动态定时任务共用工具/);
   assert.match(rules, /定时任务.*不会预塞群聊消息，读取也不清理 pending/);
   assert.doesNotMatch(rules, /\[\[qq_/);
+});
+
+test("read-only host permissions do not forbid ordinary QQ replies", () => {
+  const security = { mode: "RISK_SCOPED_READ_ONLY", turnSandbox: { type: "readOnly" }, allowQqFiles: false };
+  const privatePrompt = buildMcpTurnPrompt({ targetType: "private", security, sharedSystemInstructions: true });
+  const readResult = buildPrivateTurnPrompt([], [], { userId: "12345", security, includeResponseInstruction: false });
+  const groupPrompt = buildMcpTurnPrompt({ targetType: "group", security, sharedSystemInstructions: true });
+  for (const prompt of [privatePrompt, readResult, groupPrompt]) {
+    assert.match(prompt, /本机执行权限只读/);
+    assert.match(prompt, /QQ 工具.*发送文字或表情/);
+    assert.doesNotMatch(prompt, /不得修改外部状态/);
+  }
+  assert.match(privatePrompt, /不能发送本机文件、图片/);
+  assert.match(privatePrompt, /私聊不能戳一戳/);
 });
 
 test("QQ MCP exposes current real reactions and queues face, sticker and current-group poke", () => {
