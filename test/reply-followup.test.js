@@ -13,6 +13,7 @@ import { OWNER_QQ_ID } from "../src/security/policy.js";
 import { privateSandbox } from "../src/security/subscription-policy.js";
 import { toPublicGroupState } from "../src/groups/group-state.js";
 import { AgentTaskGate } from "../src/qq/agent-task-gate.js";
+import { ConversationFollowup } from "../src/qq/conversation-followup.js";
 
 async function fixture(t, targetType = "group", targetId = "12345") {
   const directory = await mkdtemp(join(tmpdir(), "crc-followup-test-"));
@@ -118,6 +119,73 @@ test("a burst arriving before the old model exits queues one serial round and su
   const next = await f.store.beginWork("12345");
   assert.equal(next.trigger.reason, "followup");
   assert.deepEqual(next.messages.map((message) => message.messageId), arrivals.map((message) => message.messageId));
+});
+
+test("a late mention upgrade of an active followup cannot swallow the next visual round", async (t) => {
+  for (const targetType of ["group", "private"]) {
+    const f = await fixture(t, targetType);
+    await endRound(f, await f.store.beginWork("12345"), { send: true });
+    const mention = await f.append("wake", { mentionedBot: true });
+    const work = await f.store.beginWork("12345");
+    assert.equal(work.trigger.reason, "followup");
+    const ctx = f.context(work);
+    await ctx.liveTool("read_messages", {}, f.active);
+    await ctx.liveTool("send_message", { text: "回复这次唤醒" }, f.active);
+    // Intake resumes after the worker already began the same message's turn.
+    await new TriggerManager({ store: f.store }).considerMessage(mention);
+    assert.equal(f.store.snapshot("12345").pendingTrigger, null, targetType);
+    await f.append("new image", { images: [{ localPath: "/tmp/followup-race.png" }] });
+    await f.append("new text");
+    await ctx.liveTool("wait_for_messages", { seconds: 1 }, f.active);
+    assert.equal(ctx.deferredNewMedia, true);
+    await ctx.liveTool("end_conversation", {}, f.active);
+    const followup = new ConversationFollowup({ store: f.store, canRun: () => true, blocked: () => false });
+    await followup.arm("12345", ctx);
+    await f.store.completeLiveConversation("12345", { lastReadSequence: ctx.lastReadSequence, trigger: work.trigger });
+    const next = await f.store.beginWork("12345");
+    assert.equal(next?.trigger.reason, "followup", targetType);
+    assert.deepEqual(next.messages.map((message) => message.messageId), ["new image", "new text"]);
+  }
+});
+
+test("a newer mention already read in this turn cannot displace an unread followup", async (t) => {
+  const f = await fixture(t);
+  const work = await f.store.beginWork("12345");
+  const ctx = f.context(work);
+  await ctx.liveTool("read_messages", {}, f.active);
+  const mention = await f.append("new mention", { mentionedBot: true });
+  await f.store.requestTrigger("12345", "mention", mention);
+  assert.equal(f.store.snapshot("12345").pendingTrigger.messageId, "new mention");
+  await ctx.liveTool("read_messages", {}, f.active);
+  await ctx.liveTool("send_message", { text: "已经回复新提问" }, f.active);
+  await f.append("still unread");
+  const followup = new ConversationFollowup({ store: f.store, canRun: () => true, blocked: () => false });
+  await followup.arm("12345", ctx);
+  await f.store.completeLiveConversation("12345", { lastReadSequence: ctx.lastReadSequence, trigger: work.trigger });
+  const next = await f.store.beginWork("12345");
+  assert.equal(next?.trigger.reason, "followup");
+  assert.deepEqual(next.messages.map((message) => message.messageId), ["still unread"]);
+});
+
+test("followup status only shows waiting for a real observation window", async (t) => {
+  const f = await fixture(t);
+  const work = await f.store.beginWork("12345");
+  const ctx = f.context(work);
+  await ctx.liveTool("read_messages", {}, f.active);
+  let view;
+  const followup = new ConversationFollowup({ store: f.store, canRun: () => true, blocked: () => false,
+    setLive: (_id, patch) => { view = patch; } });
+  followup.publishWaiting("12345");
+  assert.equal(view.status, "completed");
+  assert.equal(view.waitUntil, null);
+  await followup.arm("12345", ctx);
+  followup.publishWaiting("12345");
+  assert.equal(view.status, "waiting");
+  assert.ok(view.waitUntil);
+  await f.append("queued followup");
+  followup.publishWaiting("12345");
+  assert.equal(view.status, "queued");
+  assert.equal(view.waitUntil, null);
 });
 
 test("scope, received time and wake flags come from the gateway rather than incoming data", async (t) => {

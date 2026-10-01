@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 // ordinary wake-ups. Delivery retries and explicit controls still take precedence.
 export const TRIGGER_PRIORITY = Object.freeze({ scheduled: 1, followup: 3, message_count: 3, mention: 4, poke: 4, subscription_auto: 5, retry: 6, control: 7 });
 export const REPLY_FOLLOWUP_MS = 120_000;
+const MESSAGE_WAKE_REASONS = new Set(["scheduled", "followup", "message_count", "mention", "poke"]);
 const LEGACY_EMPTY_REPLY_PLACEHOLDER = "这条消息暂时无法安全回复。";
 
 export function rateLimitResumeAt(error) {
@@ -236,6 +237,12 @@ export class SessionStore {
     this.assertReplyEnabled(groupId);
     if (!group.busy || group.processing?.kind !== "agent") throw new Error("No live Agent conversation is active");
     const now = this.clock();
+    // A wake for a message already read in this turn must not outrank the
+    // unread followup below, then disappear during completion's cutoff cleanup.
+    // Explicit controls, retries and subscription tasks keep their priority.
+    if (afterSequence != null && MESSAGE_WAKE_REASONS.has(group.pendingTrigger?.reason)
+      && group.pendingTrigger.sequence != null
+      && Number(group.pendingTrigger.sequence) <= Number(afterSequence)) group.pendingTrigger = null;
     group.replyFollowup = {
       startedAt: now.toISOString(), expiresAt: new Date(now.getTime() + Math.max(0, Math.min(REPLY_FOLLOWUP_MS, durationMs))).toISOString(),
       afterSequence: afterSequence == null ? this.state.nextSequence - 1 : Number(afterSequence)
@@ -314,6 +321,14 @@ export class SessionStore {
 
   async requestTrigger(groupId, reason, meta = {}) {
     const group = this.ensureGroup(groupId);
+    const activeTrigger = group.processing?.kind === "agent" ? group.processing.trigger : null;
+    // appendMessage can wake the worker before intake finishes classifying the
+    // same message as an @ or poke. It is already being handled, not a new task.
+    if (group.busy && MESSAGE_WAKE_REASONS.has(reason) && meta.sequence != null
+      && activeTrigger?.sequence != null
+      && Number(meta.sequence) === Number(activeTrigger.sequence)) {
+      return structuredClone(group.pendingTrigger);
+    }
     const candidate = makeTrigger(reason, meta, this.nowIso());
     group.pendingTrigger = strongerTrigger(group.pendingTrigger, candidate);
     await this.save();

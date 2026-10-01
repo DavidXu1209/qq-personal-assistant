@@ -15,8 +15,11 @@ export class ConversationFollowup {
   }
 
   publishWaiting(id, patch = {}) {
-    const window = this.store.snapshot(id).replyFollowup;
-    const status = this.cancelled.has(String(id)) ? "cancelled" : !this.canRun(id) ? "paused" : "waiting";
+    const state = this.store.snapshot(id);
+    const window = state.replyFollowup;
+    const observing = window && Date.parse(window.expiresAt) > this.store.clock().getTime();
+    const status = this.cancelled.has(String(id)) ? "cancelled" : !this.canRun(id) ? "paused"
+      : state.pendingTrigger ? "queued" : observing ? "waiting" : "completed";
     this.setLive(id, { ...patch, status, text: "", error: null, waitUntil: status === "waiting" ? window?.expiresAt || null : null });
   }
 
