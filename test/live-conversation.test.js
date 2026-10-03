@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { SessionStore } from "../src/storage/session-store.js";
 import { TriggerManager } from "../src/groups/trigger-manager.js";
 import { createLiveConversationTools, prepareLiveConversationPrompt } from "../src/qq/live-conversation.js";
+import { toPublicGroupState } from "../src/groups/group-state.js";
 
 async function fixture(t, oneBot = null) {
   const directory = await mkdtemp(join(tmpdir(), "crc-live-qq-test-"));
@@ -74,6 +75,75 @@ test("initial prefetch uses the same bounded reader without clearing pending or 
   assert.deepEqual(removed.map((message) => message.messageId), ["m1"]);
   assert.deepEqual(store.snapshot("12345").pendingMessages.map((message) => message.messageId), ["m2"]);
   assert.deepEqual(sent, [["text", "直接回复首批"]]);
+});
+
+test("group and private prefetch use the panel activity window, not hidden sent history", async (t) => {
+  for (const targetType of ["group", "private"]) {
+    const f = await fixture(t);
+    await f.store.recordLiveActionSent("12345", {
+      kind: "message", summary: "已经处理的旧回复", observedSequence: 1, messageId: "701"
+    });
+    await f.store.completeLiveConversation("12345", { lastReadSequence: 1 });
+    await f.store.recordStandaloneActionSent("12345", {
+      kind: "message", summary: "面板上的上一次完整回答", messageId: "702"
+    });
+    const pending = await f.append("m2", "面板上的待处理消息");
+    await f.store.requestTrigger("12345", "mention", pending);
+    await f.store.beginWork("12345");
+    const view = toPublicGroupState(f.store.snapshot("12345"));
+    const context = createLiveConversationTools({
+      store: f.store, targetId: "12345", targetType, oneBot: {},
+      trigger: { reason: "mention", trust: "UNTRUSTED" }, triggerMessages: [pending],
+      security: {}, initialImageSequence: pending.sequence,
+      renderMessages: (messages) => messages.map((message) => message.text).join("\n")
+    });
+    const prepared = await prepareLiveConversationPrompt(context, "本轮权限");
+    assert.ok(prepared.includes(view.lastCompletedReply.text));
+    for (const message of view.pendingMessages) assert.ok(prepared.includes(message.text));
+    assert.doesNotMatch(prepared, /已经处理的旧回复|最近由你成功发出的消息|"tool"|"content"/);
+    assert.equal(prepared.match(/面板上的上一次完整回答/g)?.length, 1);
+    assert.equal(context.lastReadSequence, pending.sequence);
+    assert.equal(f.store.snapshot("12345").pendingMessages.length, 1);
+    await f.append("m3", "后来到达的新消息");
+    const more = await context.liveTool("read_messages", {}, f.active);
+    assert.match(more.content[0].text, /后来到达的新消息/);
+    assert.doesNotMatch(more.content[0].text, /面板上的上一次完整回答|面板上的待处理消息|已经处理的旧回复/);
+  }
+});
+
+test("prefetch never substitutes hidden lastReply when the panel has no completed reply", async (t) => {
+  const f = await fixture(t);
+  await f.store.recordLiveActionSent("12345", {
+    kind: "message", summary: "未完成的已发送动作", observedSequence: 1, messageId: "703"
+  });
+  assert.equal(toPublicGroupState(f.store.snapshot("12345")).lastCompletedReply, null);
+  const prepared = await prepareLiveConversationPrompt(f.context, "任务");
+  assert.match(prepared, /第一句/);
+  assert.doesNotMatch(prepared, /未完成的已发送动作|上一次完整回答|最近由你成功发出的消息/);
+});
+
+test("group and private MCP sends preserve AI punctuation, line breaks and emoji", async (t) => {
+  const expected = "先这样，等等😂\n再说,行吗👍🏽";
+  const group = await fixture(t);
+  await group.context.liveTool("read_messages", {}, group.active);
+  assert.equal((await group.context.liveTool("send_message", { text: expected }, group.active)).isError, false);
+  assert.deepEqual(group.sent, [["text", expected]]);
+
+  const privateSends = [];
+  const privateSession = await fixture(t);
+  const privateContext = createLiveConversationTools({
+    store: privateSession.store, targetId: "12345", targetType: "private",
+    oneBot: { async sendPrivateMessage(_target, text) {
+      privateSends.push(text);
+      return { ok: true, status: 200 };
+    } },
+    trigger: { reason: "mention", messageId: "m1", trust: "OWNER" },
+    triggerMessages: [], security: { allowQqFiles: false, allowedFileRoots: [] },
+    initialImageSequence: 1, renderMessages: (messages) => messages.map((message) => message.text).join("\n")
+  });
+  await privateContext.liveTool("read_messages", {}, privateSession.active);
+  assert.equal((await privateContext.liveTool("send_message", { text: expected }, privateSession.active)).isError, false);
+  assert.deepEqual(privateSends, [expected]);
 });
 
 test("prefetch honors pagination and subsequent MCP reads still return later pages", async (t) => {
@@ -311,6 +381,30 @@ test("a completed periodic turn consumes messages it read even without a QQ acti
   assert.deepEqual(removed.map((message) => message.messageId), ["m1"]);
   assert.equal(store.snapshot("12345").pendingMessages.length, 0);
   assert.equal(store.snapshot("12345").lastCompletedReply, null);
+});
+
+test("silent periodic completion clears only the pages actually read, not unread or later messages", async (t) => {
+  const { store, context, active, append } = await fixture(t);
+  for (let n = 2; n <= 42; n++) await append(`m${n}`, `批次消息${n}`);
+  const firstPage = await context.liveTool("read_messages", {}, active);
+  assert.match(firstPage.content[0].text, /还有未读取的消息/);
+  assert.equal(context.lastReadSequence, 40);
+  await append("m43", "模型读取后才到的消息");
+  const removed = await store.completeLiveConversation("12345", {
+    trigger: { reason: "scheduled" },
+    lastReadSequence: context.lastReadSequence,
+    consumeReadWithoutReply: true
+  });
+  assert.equal(removed.length, 40);
+  assert.deepEqual(store.snapshot("12345").pendingMessages.map((item) => item.messageId), ["m41", "m42", "m43"]);
+});
+
+test("failed periodic turn retains every pending message even after a read", async (t) => {
+  const { store, context, active, append } = await fixture(t);
+  await context.liveTool("read_messages", {}, active);
+  await append("m2", "读取后到达");
+  await store.failWork("12345", new Error("模型调用失败"));
+  assert.deepEqual(store.snapshot("12345").pendingMessages.map((item) => item.messageId), ["m1", "m2"]);
 });
 
 test("read_messages can wait for new text without rereading old content", async (t) => {

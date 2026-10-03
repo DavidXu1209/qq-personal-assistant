@@ -136,8 +136,8 @@ export class DailyStyleCoordinator {
       this.publish();
       await this.save();
       const rules = due.length ? await this.summarize(due) : null;
-      await this.persona.publishDailyUpdate({ rules, cutoff, summarizedAt: this.clock().toISOString() });
-      this.codex.setSystemPrompt?.(this.persona.systemPromptForClient());
+      const changed = await this.persona.publishDailyUpdate({ rules, cutoff, summarizedAt: this.clock().toISOString() });
+      if (changed) this.codex.setSystemPrompt?.(this.persona.systemPromptForClient());
       this.state.samples = this.state.samples.filter((sample) => !ids.has(sample.id));
       this.state.lastCompletedCutoff = cutoff;
       this.state.lastSummaryAt = this.clock().toISOString();

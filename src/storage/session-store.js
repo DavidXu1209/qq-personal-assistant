@@ -112,6 +112,17 @@ export class SessionStore {
     return structuredClone(group);
   }
 
+  async removeConversation(groupId) {
+    const id = String(groupId);
+    const group = this.state.groups[id];
+    if (!group) return null;
+    if (group.busy || group.processing) throw new Error("会话仍有进行中的任务，请先终止或等待完成");
+    delete this.state.groups[id];
+    await this.save();
+    this.messageEvents.emit(id);
+    return structuredClone(group);
+  }
+
   referencedImages() {
     return Object.values(this.state.groups).flatMap((group) => group.pendingMessages.flatMap((message) => message.images || []));
   }

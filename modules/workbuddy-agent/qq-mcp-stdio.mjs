@@ -104,13 +104,17 @@ const allTools = [
     inputSchema: { type: "object", properties: { path: { type: "string", description: "本机绝对路径" } }, required: ["path"], additionalProperties: false }
   },
   {
-    name: "end_conversation", description: "结束当前模型轮次，不终止网关接话运行。无需调用本工具来开启等待：任何正常轮次结束，程序都会自动保持两分钟等待，新消息立即续接，连续两分钟无消息才退出。调用后直接结束模型轮次。",
+    name: "end_conversation", description: "兼容结束工具。通常直接结束模型轮次即可，不要为了沉默或开启等待专门调用；网关自动等待两分钟接话。调用后直接结束，不输出确认文字。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
     name: "list_reactions",
-    description: "只读列出当前 QQ 会话真正可用的内置表情和收藏的原生表情包及使用场景；轻松接梗、无语、震惊或简短回应时可优先查看。",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false }
+    description: "按场景搜索真实可用的内置/收藏表情；默认各取 8 个，可用 nextOffset 翻页。不要猜名称或 ID。",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string", maxLength: 80, description: "场景关键词，如 无语、疑惑、开心；空值浏览" },
+      offset: { type: "integer", minimum: 0 },
+      limit: { type: "integer", minimum: 1, maximum: 20 }
+    }, additionalProperties: false }
   },
   {
     name: "send_reaction",

@@ -225,6 +225,23 @@ def normalize_effort(value: Any) -> Optional[str]:
     return None
 
 
+def result_usage(message: Any) -> Dict[str, Any]:
+    """Forward SDK fields verbatim. Missing cache data is unknown, not zero.
+
+    Do not derive billed credits or cache-miss tokens from ambiguous SDK fields.
+    """
+    usage = getattr(message, "usage", None)
+    def number(key: str):
+        value = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
+    return {
+        "inputTokens": number("input_tokens"), "outputTokens": number("output_tokens"),
+        "cachedTokens": number("cache_read_input_tokens"),
+        "cacheCreationTokens": number("cache_creation_input_tokens"),
+        "modelCalls": getattr(message, "num_turns", None),
+    }
+
+
 def normalize_context_limit(value: Any) -> str:
     """归一化为 CLI --autocompact 的真实取值：auto 或 100K..1M。"""
     if value in (None, "", "auto"):
@@ -1034,6 +1051,9 @@ class Bridge:
                                 raise WorkBuddyModelFailure(message.error or "WorkBuddy 返回未知错误")
                             if isinstance(message, ResultMessage):
                                 result_message = message
+                                emit({"jsonrpc": "2.0", "method": "turn/usage", "params": {
+                                    "threadId": turn.thread_id, "turnId": turn.turn_id,
+                                    "usage": result_usage(message)}})
                                 # SDK 的真实会话 id：重建 client / 网关重启后的续接全靠它
                                 sdk_id = getattr(message, "session_id", None)
                                 if sdk_id and sdk_id not in session.retired_sdk_session_ids:

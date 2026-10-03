@@ -2,6 +2,7 @@ export class TriggerManager {
   constructor({ store, allowedGroups = null, periodicMinutes = 10, clock = () => new Date(), intervalMs = 30_000 } = {}) {
     this.store = store;
     this.allowedGroups = allowedGroups == null ? null : new Set(allowedGroups.map(String));
+    this.removedGroups = new Set();
     this.clock = clock;
     this.intervalMs = intervalMs;
     this.periodicMs = Math.max(1, Number(periodicMinutes) || 10) * 60_000;
@@ -15,13 +16,21 @@ export class TriggerManager {
   }
 
   isAllowed(groupId) {
-    return this.allowedGroups == null || this.allowedGroups.has(String(groupId));
+    return !this.removedGroups.has(String(groupId)) && (this.allowedGroups == null || this.allowedGroups.has(String(groupId)));
   }
 
   allowGroup(groupId) {
     const id = String(groupId);
+    this.removedGroups.delete(id);
     this.allowedGroups?.add(id);
     this.startupPendingSequence.set(id, Number(this.store.snapshot(id).pendingMessages.at(-1)?.sequence || 0));
+  }
+
+  disallowGroup(groupId) {
+    const id = String(groupId);
+    this.removedGroups.add(id);
+    this.allowedGroups?.delete(id);
+    this.startupPendingSequence.delete(id);
   }
 
   setWorker(worker) {
@@ -51,6 +60,7 @@ export class TriggerManager {
   }
 
   async reconsiderPending(groupId) {
+    if (!this.isAllowed(groupId)) return null;
     const group = this.store.snapshot(groupId);
     if (group.pendingMessages.length === 0) return null;
     if (Number(group.pendingMessages.at(-1)?.sequence || 0) <= Number(group.deferredThroughSequence || 0)) return null;

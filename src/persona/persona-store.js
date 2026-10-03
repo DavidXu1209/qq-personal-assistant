@@ -6,6 +6,8 @@ export const MAX_PUBLISHED_STYLE_RULES = 5;
 export const MAX_PUBLISHED_STYLE_RULE_CHARS = 55;
 export const MAX_PUBLISHED_STYLE_TOTAL_CHARS = 220;
 export const MAX_CATCHPHRASES = 20;
+export const MAX_PERSONA_EXAMPLES = 8;
+export const MAX_PERSONA_EXAMPLE_CHARS = 1200;
 
 /** One shared persona. Per-conversation mood, relationship and feedback state is not loaded or injected. */
 export class PersonaStore {
@@ -63,6 +65,7 @@ export class PersonaStore {
       ...section("群文化与工具", wording(core.adaptation)),
       ...catchphraseSection(this.catchphrases()),
       ...section("反 AI 味黑名单", wording(core.antiAi)),
+      ...exampleSection(this.examples, core.name, name),
       `兴趣倾向：${core.interests.join("、")}`,
       "安全、权限、事实核验和当前任务要求始终优先于语言风格。",
       "</laodai_persona>",
@@ -94,6 +97,7 @@ export class PersonaStore {
   }
 
   async publishDailyUpdate({ rules = null, cutoff, summarizedAt = this.clock().toISOString() } = {}) {
+    const previousPrompt = this.systemPromptForClient();
     const normalized = rules === null ? null : validateStyleRules(rules);
     const applyCatchphrases = this.pendingCatchphrasesDue(cutoff);
     if (normalized === null && !applyCatchphrases) return false;
@@ -109,7 +113,7 @@ export class PersonaStore {
       }
     });
     if (normalized !== null) this.publishedStyleRules = normalized;
-    return true;
+    return this.systemPromptForClient() !== previousPrompt;
   }
 
   async setName(value) {
@@ -164,6 +168,7 @@ export class PersonaStore {
         "文字、表情、戳一戳、等待和沉默是等价动作"
       ],
       exampleCount: this.examples.length,
+      injectedExampleCount: exampleLines(this.examples, this.core.name, this.name()).length,
       publishedStyle: { rules: [...this.publishedStyleRules], summarizedAt: this.ownerStyle.styleSummarizedAt },
       catchphrases: this.catchphrases(),
       pendingCatchphrases: this.ownerStyle.pendingCatchphrases,
@@ -291,6 +296,26 @@ function catchphraseSection(items) {
       + items.map((item) => `- ${item.text}：${item.when}`).join("\n")
       + "\n同一轮最多用一个。不要连续复用同一个口头禅，不要把它们组合成固定模板。"
   ] : [];
+}
+
+function exampleLines(items, previousName, name) {
+  const lines = [];
+  let used = 0;
+  for (const item of items) {
+    const replies = (Array.isArray(item.examples) ? item.examples : []).slice(0, 2)
+      .map((text) => clean(text, 70).replaceAll(previousName, name)).filter(Boolean);
+    const line = `${clean(item.situation, 70).replaceAll(previousName, name)} → ${clean(item.behavior, 85).replaceAll(previousName, name)}${replies.length ? `；如「${replies.join(" / ")}」` : ""}`;
+    if (used + line.length > MAX_PERSONA_EXAMPLE_CHARS) continue;
+    lines.push(line);
+    used += line.length;
+    if (lines.length === MAX_PERSONA_EXAMPLES) break;
+  }
+  return lines;
+}
+
+function exampleSection(items, previousName, name) {
+  const lines = exampleLines(items, previousName, name);
+  return lines.length ? ["情境示范（学习判断与语气，不照抄；沉默、单发表情、单戳和纯文字均可）：", ...lines] : [];
 }
 
 function ownerStyleRuleSection(rules) {

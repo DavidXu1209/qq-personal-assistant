@@ -5,6 +5,7 @@ import { QQ_FACE_ALIASES } from "./file-directive.js";
 import { AGENT_QQ_ID, OWNER_QQ_ID, sanitizeGroupReply } from "../security/policy.js";
 import { QqMessageReader, MESSAGE_READER_TOOLS } from "./message-reader.js";
 import { readGroupManagement, manageGroup } from "./group-management.js";
+import { conversationActivityWindow } from "../groups/group-state.js";
 
 const PAGE_SIZE = 40;
 const MAX_WAIT_MS = 8000;
@@ -47,7 +48,7 @@ export async function prepareLiveConversationPrompt(context, prompt) {
   }
   return [
     "【网关预读取结果】",
-    JSON.stringify({ tool: "read_messages", content: result.content }),
+    ...result.content.filter((item) => item.type === "text").map((item) => item.text),
     String(prompt || "")
   ].join("\n\n");
 }
@@ -156,14 +157,18 @@ export function createLiveConversationTools({
         });
         else await pause(Math.min(250, deadline - Date.now()));
       } while (true);
-      const fresh = snapshot.pendingMessages.filter((message) => Number(message.sequence) > context.lastReadSequence);
+      const activity = conversationActivityWindow(snapshot);
+      const fresh = activity.pendingMessages.filter((message) => Number(message.sequence) > context.lastReadSequence);
       const firstBlockedMedia = fresh.findIndex((message) =>
         Number(message.sequence) > initialImageSequence && (message.images || []).some((image) => image.localPath)
       );
       const readable = (firstBlockedMedia < 0 ? fresh : fresh.slice(0, firstBlockedMedia)).slice(0, PAGE_SIZE);
       const first = !context.readCalled;
       if (firstBlockedMedia >= 0) context.deferredNewMedia = true;
-      const output = renderMessages(readable, { first, snapshot });
+      const previousReply = first && activity.lastCompletedReply?.text
+        ? `【上一次完整回答】${activity.lastCompletedReply.messageId ? ` [消息 ID ${activity.lastCompletedReply.messageId}]` : ""}\n${activity.lastCompletedReply.text}`
+        : "";
+      const output = [previousReply, renderMessages(readable, { first, snapshot })].filter(Boolean).join("\n\n");
       messageReader.capture(readable);
       if (first) messageReader.capture(readOnlyContextMessages);
       if (readable.length) {
@@ -190,11 +195,6 @@ export function createLiveConversationTools({
       else if (fresh.length > readable.length) notes.push("还有未读取的消息；请再次调用 read_messages。");
       if (!readable.length && firstBlockedMedia < 0) notes.push("目前没有新消息；可以继续等待，也可以结束本轮。");
       if (scheduledTask) notes.push("这是定时任务按需读取的当前会话消息；不会标记为已处理，也不会清理 pending。");
-      if (first) {
-        const own = (snapshot.sentMessages || []).filter((item) => !item.recalledAt).slice(-10)
-          .map(({ messageId, kind, summary }) => ({ messageId, kind, summary }));
-        if (own.length) notes.push(`当前会话最近由你成功发出的消息（仅这些可撤回）：${JSON.stringify(own)}`);
-      }
       return answer([output, ...notes].filter(Boolean).join("\n\n"));
     }
     if (name === "recall_message") {

@@ -9,7 +9,7 @@ import {
 } from "../security/policy.js";
 import { parseQqDeliveryDirectives } from "./file-directive.js";
 import { createLiveConversationTools } from "./live-conversation.js";
-import { runLiveTurnWithSendRecovery } from "./live-send-recovery.js";
+import { runConversationTurn } from "./conversation-turn.js";
 import { QqMessageReader } from "./message-reader.js";
 import { ConversationFollowup } from "./conversation-followup.js";
 import { StickerLabelCoordinator } from "./sticker-label-coordinator.js";
@@ -20,7 +20,6 @@ import {
   buildPrivateTurnPrompt,
   formatAutomationConfirmations,
   formatSubscriptionContexts,
-  runAutoSubscriptionTurn,
   privateSandbox
 } from "../security/subscription-policy.js";
 
@@ -290,6 +289,7 @@ export class PrivateWorker {
       canRun: () => this.canRun(userId), onEvent: this.onEvent,
       renderMessages: (messages, { snapshot }) => buildPrivateTurnPrompt(messages, [], {
         userId, displayName: this.targetNameResolver(userId), security,
+        compact: true, includePermissionNotice: false,
         includeResponseInstruction: false, activeMessages: snapshot.pendingMessages
       })
     });
@@ -410,12 +410,9 @@ export class PrivateWorker {
           buildPrivateTurnPrompt(messages, first ? contexts : [], {
             userId, displayName: this.targetNameResolver(userId), security,
             includeBaseInstructions: false, includeResponseInstruction: false, stickerCatalog: [],
-            activeMessages: snapshot.pendingMessages
+            activeMessages: snapshot.pendingMessages, compact: true, includePermissionNotice: false
           }),
-          ...(first ? extraReadSections : []),
-          ...(first && snapshot.liveSession?.actions?.length
-            ? [`【此前已送达 QQ、尚未清理的最近动作】${snapshot.liveSession.actions.slice(-8).map((item) => `${item.kind}: ${item.summary}`).join("；")}；不要重复发送。`]
-            : [])
+          ...(first ? extraReadSections : [])
         ].filter(Boolean).join("\n\n")
       }) : !autoSubscriptionTurn ? {
         targetType: "private", allowMessage: true, allowReactions: true,
@@ -448,17 +445,13 @@ export class PrivateWorker {
           this.onEvent({ type: "private-delta", userId, threadId, delta: autoSubscriptionTurn ? "" : delta, text: visibleText, at: new Date().toISOString() });
         }
       };
-      const autoTurn = autoSubscriptionTurn ? await runAutoSubscriptionTurn({
-        runTurn: (turnPrompt) => this.codex.runTurn({ ...turnRequest, prompt: turnPrompt }),
-        prompt, contexts: inputContexts, targetType: "private", targetId: userId,
-        pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
-        sourceReadContext: sourceViaMcp ? qqToolContext : null
-      }) : null;
-      const result = autoTurn?.result || await runLiveTurnWithSendRecovery(
-        (request) => this.codex.runTurn(request), turnRequest, {
-          onRecovery: () => this.onEvent({ type: "private-send-tool-recovery", userId, threadId, at: new Date().toISOString() })
-        }
-      );
+      const autoTurn = await runConversationTurn({ codex: this.codex, request: turnRequest,
+        autoSubscription: autoSubscriptionTurn ? { contexts: inputContexts, targetType: "private", targetId: userId,
+          pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
+          sourceReadContext: sourceViaMcp ? qqToolContext : null } : null,
+        onRecovery: () => this.onEvent({ type: "private-send-tool-recovery", userId, threadId, at: new Date().toISOString() })
+      });
+      const result = autoTurn.result;
 
       this.store.assertReplyEnabled(userId);
       if (useMcpRead) {

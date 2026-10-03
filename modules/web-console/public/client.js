@@ -1,5 +1,8 @@
+import { conversationStatus } from "./client-status.js";
 const HUB = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:3789";
 const els = Object.fromEntries([
+  "deleteTargetButton", "deleteTargetHint", "deleteTargetDialog", "deleteTargetForm", "deleteTargetName", "deleteTargetStatus", "cancelDeleteTargetButton", "confirmDeleteTargetButton",
+  "toggleNavigationButton", "globalSettingsButton", "settingsButton", "settingsDrawer", "closeSettingsButton", "settingsTargetName", "conversationSettingsBody", "globalSettingsBody", "diagnosticsDetails", "usageSummary", "turnInputPreview", "refreshInputButton", "conversationSearch",
   "stickerLibraryButton", "stickerBlacklistButton", "stickerLibraryCount", "stickerBlacklistCount", "stickerLibraryHelp",
   "connectionBadge", "refreshButton", "agentDispatchToggle", "agentDispatchLabel", "qzoneButton", "stickerGalleryButton", "stickerGalleryButtonCount",
   "workspace", "qzonePanel", "closeQzoneButton", "qzoneBanner", "qzoneForm", "qzoneTarget", "qzoneAutoPost", "qzonePostTimes", "qzoneAutoEngage", "qzoneLastSeenTime", "saveQzoneButton", "qzoneSaveStatus", "qzoneEvents", "stickerGallery", "closeStickerGalleryButton", "stickerReadyCount", "stickerRecognizingCount", "stickerCommitCount", "stickerGalleryModel", "stickerRecognitionStatus", "stickerGalleryActionStatus", "stickerGalleryGrid",
@@ -21,6 +24,9 @@ const els = Object.fromEntries([
   "resetButton", "cancelButton", "replyControl", "replyEnabledToggle", "replyEnabledLabel", "replyEnabledHint", "conversation", "jumpToLatest", "composer", "promptInput", "sendButton"
 ].map((id) => [id, document.getElementById(id)]));
 
+for (const id of ["sessionDetails", "agentSettingsDetails", "subscriptionDetails"]) els.conversationSettingsBody.append(els[id]);
+for (const id of ["personaDetails", "stickerLabelDetails"]) els.globalSettingsBody.append(els[id]);
+
 let state = null;
 let maintenance = null;
 let selectedKey = localStorage.getItem("crc-selected-target") || "";
@@ -28,6 +34,7 @@ let stream = null;
 let refreshTimer = null;
 let renderedKey = "";
 let conversationSignature = "";
+let conversationStructureSignature = "";
 let navigationSignature = "";
 let settingsSignature = "";
 let settingsDirty = false;
@@ -44,6 +51,9 @@ let personaCatchphraseDirty = false;
 let personaCatchphraseSignature = "";
 let replySwitchSaving = false;
 let groupCandidatesLoading = false;
+let inputPreviewKey = "";
+let deletingTarget = null;
+let deleteTargetSaving = false;
 const scrollState = new Map();
 
 async function api(path, options = {}) {
@@ -93,6 +103,7 @@ function render() {
   renderStickerGallery();
   renderQzone();
   renderView();
+  renderDiagnostics(selected);
 }
 
 function agentName() { return state?.persona?.name || "老代"; }
@@ -254,16 +265,18 @@ function allItems() {
 }
 
 function renderNavigation(all) {
-  const groups = all.filter((item) => item.kind === "group");
-  const privateChats = all.filter((item) => item.kind === "private");
-  const sources = all.filter((item) => item.kind === "source");
+  const query = els.conversationSearch.value.trim().toLowerCase();
+  const visible = all.filter((item) => !query || `${itemName(item)} ${item.data.targetId || item.data.groupId}`.toLowerCase().includes(query));
+  const groups = visible.filter((item) => item.kind === "group");
+  const privateChats = visible.filter((item) => item.kind === "private");
+  const sources = visible.filter((item) => item.kind === "source");
   els.groupCount.textContent = String(all.length);
   els.agentGroupCount.textContent = String(groups.length);
   els.sourceCount.textContent = String(sources.length);
-  const signature = JSON.stringify(all.map((item) => [item.key, itemName(item), item.data.replyEnabled, item.data.pendingCount, item.data.retainedCount, item.data.visibleCount, item.data.pendingSubscriberCount, item.data.failedSubscriberCount, item.data.activeReply?.running, item.data.qzoneActivity, item.data.threadLock?.status, item.data.subscriptions?.length, item.key === selectedKey]));
+  const signature = JSON.stringify([query, state?.agentDispatch?.enabled, visible.map((item) => [item.key, itemName(item), item.data.replyEnabled, item.data.pendingCount, item.data.retainedCount, item.data.visibleCount, item.data.pendingSubscriberCount, item.data.failedSubscriberCount, item.data.activeReply?.running, item.data.activeReply?.status, item.data.diagnostics?.stage, item.data.qzoneActivity, item.data.threadLock?.status, item.data.subscriptions?.length, item.key === selectedKey])]);
   if (signature === navigationSignature) return;
   navigationSignature = signature;
-  els.groupList.innerHTML = groups.length ? groups.map(renderNavigationButton).join("") : '<p class="empty compact">尚未配置 Agent 群</p>';
+  els.groupList.innerHTML = groups.length ? groups.map(renderNavigationButton).join("") : `<p class="empty compact">${query ? "没有匹配群聊" : "尚未配置 Agent 群"}</p>`;
   els.privateList.innerHTML = privateChats.length ? privateChats.map(renderNavigationButton).join("") : '<p class="empty compact">尚未配置 Agent 私聊</p>';
   els.sourceList.innerHTML = sources.length ? sources.map(renderNavigationButton).join("") : '<p class="empty compact">添加订阅后会显示通知源</p>';
 }
@@ -304,6 +317,7 @@ function renderNavigationButton(item) {
     status = String(data.pendingCount);
     tone = "pending";
   }
+  if (item.kind !== "source") ({ short: status, tone } = conversationStatus(data, state));
   const subtitle = item.kind === "group" ? `群 ${data.targetId}` : item.kind === "private" ? `私聊 ${data.targetId}` : `来源群 ${data.groupId}`;
   return `
     <button class="group-button ${selected ? "selected" : ""}" type="button" data-target-key="${escapeHtml(item.key)}" ${selected ? 'aria-current="true"' : ""}>
@@ -350,8 +364,12 @@ function renderSelected(item) {
   els.replyEnabledLabel.textContent = replyEnabled ? "允许回复" : "不回复";
   els.replyEnabledHint.textContent = !replyEnabled ? "消息继续记录" : state?.agentDispatch?.enabled === false ? "总开关已暂停" : "仅影响当前会话";
   els.sessionDetails.hidden = !item || source;
+  els.deleteTargetButton.disabled = !item || source || Boolean(data?.busy || active.running || data?.qzoneActivity);
+  els.deleteTargetHint.textContent = data?.busy || active.running || data?.qzoneActivity
+    ? "请先终止或等待当前任务完成，再删除会话。"
+    : "移出白名单、解除订阅并归档本地状态，不退群、不删好友。";
   els.agentSettingsDetails.hidden = !item || source;
-  els.personaDetails.hidden = !item || source;
+  els.personaDetails.hidden = false;
   els.subscriptionDetails.hidden = !item || source;
   els.threadId.textContent = source ? "只读来源" : (data?.threadId || "尚未创建");
   els.threadId.title = data?.threadId || "";
@@ -360,7 +378,7 @@ function renderSelected(item) {
   els.threadCreatedAt.textContent = source ? "—" : formatTime(data?.threadCreatedAt);
   els.lastActivityAt.textContent = formatTime(data?.lastActivityAt);
   els.pendingCount.textContent = String(source ? (data?.visibleCount || 0) : (data?.pendingCount || 0));
-  els.workerState.textContent = source ? "不运行" : (data?.qzoneActivity ? qzoneActivityShort(data.qzoneActivity) : (active.waiting ? "运行中 · 等待接话" : (active.uploading ? "传文件" : (active.running ? "回复中" : (data?.busy ? "处理中" : "空闲")))));
+  els.workerState.textContent = source ? "不运行" : conversationStatus(data, state).short;
   els.triggerState.textContent = source ? "禁止触发" : formatTrigger(data?.pendingTrigger?.reason);
   els.selectedGroupId.textContent = !item ? "QQ AGENT" : item.kind === "group" ? `AGENT 群 · ${data.targetId}` : item.kind === "private" ? `AGENT 私聊 · ${data.targetId}` : `只读通知源 · ${data.groupId}`;
   els.selectedGroupName.textContent = item ? itemName(item) : "选择一个会话";
@@ -379,6 +397,7 @@ function renderSelected(item) {
   else if (data.lastError || active.error) els.activityStatus.textContent = "本次回复失败，消息仍保留";
   else if (data.pendingCount > 0) els.activityStatus.textContent = `${data.pendingCount} 条消息等待处理`;
   else els.activityStatus.textContent = "消息已处理完毕";
+  if (item && !source) els.activityStatus.textContent = conversationStatus(data, state).detail;
   const error = source ? "" : (data?.lastError || active.error || "");
   els.groupError.hidden = !error;
   els.groupError.textContent = error ? `本次回复失败，消息尚未标记为已处理。${error}` : "";
@@ -388,6 +407,42 @@ function renderSelected(item) {
   els.sendButton.disabled = !item || source;
   els.promptInput.disabled = !item || source;
   if (item && !source) els.promptInput.placeholder = item.kind === "private" ? "以 OWNER 身份发起这段私聊 Agent 对话……" : "以 OWNER 身份向当前群发起 Agent 对话……";
+}
+
+function renderDiagnostics(item) {
+  els.settingsTargetName.textContent = item ? `当前：${itemName(item)}${item.kind === "source" ? " · 只读来源" : ""}` : "尚未选择会话";
+  els.diagnosticsDetails.hidden = !item || item.kind === "source";
+  const data = item?.data?.diagnostics;
+  const number = (value) => Number.isFinite(value) ? value.toLocaleString() : "未提供";
+  const metrics = [
+    ["模型启动次数", data?.requests], ["本轮 QQ 工具调用", data?.toolCalls],
+    ["输入（SDK）", data?.usage?.inputTokens], ["缓存读取（SDK）", data?.usage?.cachedTokens],
+    ["缓存写入（SDK）", data?.usage?.cacheCreationTokens],
+    ["输出 token", data?.usage?.outputTokens], ["SDK 轮次", data?.usage?.modelCalls],
+    ["本轮消息字符", data?.inputChars], ["视觉图片数", data?.imageCount]
+  ];
+  els.usageSummary.innerHTML = metrics.map(([label, value]) => `<div><span>${label}</span><strong>${number(value)}</strong></div>`).join("");
+  if (data?.firstTextMs !== null && Number.isFinite(data?.firstTextMs)) els.usageSummary.insertAdjacentHTML("beforeend", `<div><span>首段模型文字</span><strong>${(data.firstTextMs / 1000).toFixed(1)} 秒</strong></div>`);
+  const key = `${item?.key}:${data?.requests || 0}`;
+  if (key !== inputPreviewKey) {
+    inputPreviewKey = key;
+    els.turnInputPreview.textContent = "点击查看最新提交内容；这里只保留最近一轮，不积累聊天历史。";
+    if (els.diagnosticsDetails.open && els.settingsDrawer.open) loadInputPreview();
+  }
+}
+
+async function loadInputPreview() {
+  const item = currentTarget();
+  if (!item) return;
+  const key = inputPreviewKey;
+  try {
+    const segment = item.kind === "private" ? "private" : "groups";
+    const result = await api(`/api/qq/${segment}/${encodeURIComponent(item.data.targetId)}/diagnostics`);
+    if (key !== inputPreviewKey) return;
+    els.turnInputPreview.textContent = result.diagnostics?.inputPreview
+      ? `${result.diagnostics.inputPreview}${result.diagnostics.inputTruncated ? "\n（预览限 32000 字符，真实输入未截断）" : ""}`
+      : "尚无本次网关运行期间的模型输入记录。";
+  } catch (error) { if (key === inputPreviewKey) els.turnInputPreview.textContent = error.message; }
 }
 
 function renderAgentSettings(item) {
@@ -426,14 +481,13 @@ function renderAgentSettings(item) {
 }
 
 function renderPersona(item) {
-  if (!item || item.kind === "source") return;
   const persona = state?.persona || {};
   const publishedStyle = persona.publishedStyle || {};
   els.personaSummary.textContent = `${agentName()} · 所有会话共用`;
   if (!personaNameDirty && els.personaNameInput.value !== agentName()) els.personaNameInput.value = agentName();
   els.savePersonaNameButton.disabled = !personaNameDirty;
   const active = persona.catchphrases || [];
-  const pending = persona.pendingCatchphrases;
+  const pending = Array.isArray(persona.pendingCatchphrases) ? persona.pendingCatchphrases : null;
   const editable = pending ?? active;
   const signature = JSON.stringify([editable, persona.pendingCatchphrasesAt]);
   if (!personaCatchphraseDirty && signature !== personaCatchphraseSignature) {
@@ -576,6 +630,21 @@ function renderConversation(item) {
   const relevantState = { lastCompletedReply: data.lastCompletedReply, pendingMessages: data.pendingMessages, processing: data.processing, activeReply: active, qzoneActivity: data.qzoneActivity, lastError: data.lastError, failedDelivery: data.failedDelivery };
   const signature = `${item.key}:${agentName()}:${JSON.stringify(relevantState)}`;
   if (renderedKey === item.key && conversationSignature === signature) return;
+  const structure = JSON.stringify({ ...relevantState, activeReply: { ...active, text: undefined, updatedAt: undefined } });
+  const streamText = els.conversation.querySelector("[data-stream-output]");
+  if (renderedKey === item.key && conversationStructureSignature === structure && active.running && !active.waiting && streamText) {
+    rememberCurrentScroll();
+    streamText.textContent = active.text || "正在思考……";
+    const caret = document.createElement("span");
+    caret.className = "stream-caret";
+    caret.setAttribute("aria-hidden", "true");
+    streamText.append(caret);
+    conversationSignature = signature;
+    if (scrollTracker(item.key).followLatest) els.conversation.scrollTop = els.conversation.scrollHeight;
+    else { scrollTracker(item.key).hasNewContent = true; els.jumpToLatest.hidden = false; }
+    return;
+  }
+  conversationStructureSignature = structure;
   const blocks = [];
   if (data.lastCompletedReply?.text) {
     blocks.push(`<section class="conversation-section last-reply"><div class="section-label"><span>上一次完整回答</span><time>${formatTime(data.lastCompletedReply.completedAt)}</time></div>${renderReply(data.lastCompletedReply.text)}</section>`);
@@ -592,7 +661,7 @@ function renderConversation(item) {
   if (active.waiting) {
     blocks.push(`<section class="conversation-section active-section" role="status"><div class="section-label"><span>${escapeHtml(agentName())}正在等待接话</span><span class="running-label"><i></i>运行中</span></div><article class="bubble agent live"><div class="bubble-text">新消息到达会立即继续判断<br>连续两分钟无人发消息后才结束；等待期间不调用模型</div></article></section>`);
   } else if (active.running && !(["qzone-feed", "qzone-post"].includes(active.trigger) && data.qzoneActivity)) {
-    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>WorkBuddy 正在回复</span><span class="running-label"><i></i>实时生成</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>${escapeHtml(agentName())} · WorkBuddy</strong><span>${escapeHtml(formatTrigger(active.trigger))}</span></div><div class="bubble-text">${escapeHtml(active.text || "正在思考……")}<span class="stream-caret" aria-hidden="true"></span></div></article></section>`);
+    blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>WorkBuddy 正在回复</span><span class="running-label"><i></i>实时生成</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>${escapeHtml(agentName())} · WorkBuddy</strong><span>${escapeHtml(formatTrigger(active.trigger))}</span></div><div class="bubble-text" data-stream-output>${escapeHtml(active.text || "正在思考……")}<span class="stream-caret" aria-hidden="true"></span></div></article></section>`);
   }
   if (active.uploading) {
     blocks.push(`<section class="conversation-section active-section"><div class="section-label"><span>QQ 文件发送</span><span class="running-label"><i></i>上传中</span></div><article class="bubble agent live"><div class="bubble-meta"><strong>${escapeHtml(agentName())}</strong><span>群文件</span></div><div class="bubble-text">${escapeHtml(active.text || "QQ 正在上传文件……")}</div></article></section>`);
@@ -782,6 +851,15 @@ function connectStream() {
     if (payload.state) {
       state = payload.state;
       render();
+    } else if (payload.type === "target-update" && state?.qq) {
+      for (const [key, target] of Object.entries(payload.targets || {})) {
+        const [kind, id] = key.split(":");
+        const container = kind === "private" ? state.qq.privateChats : state.qq.groups;
+        if (container && Object.hasOwn(container, id)) container[id] = target;
+      }
+      state.qq.activeTargets = payload.activeTargets || state.qq.activeTargets;
+      state.qq.activeGroups = payload.activeGroups || state.qq.activeGroups;
+      render();
     } else scheduleRefresh();
   };
   stream.onerror = () => setConnection("实时连接重连中", "neutral");
@@ -806,6 +884,8 @@ async function postTargetAction(action) {
 }
 
 function selectTarget(key) {
+  els.workspace.classList.remove("nav-open");
+  els.toggleNavigationButton.setAttribute("aria-expanded", "false");
   if (key === selectedKey) return;
   rememberCurrentScroll();
   selectedKey = key;
@@ -817,6 +897,55 @@ function selectTarget(key) {
   localStorage.setItem("crc-selected-target", selectedKey);
   render();
 }
+
+for (const button of [els.settingsButton, els.globalSettingsButton]) button.addEventListener("click", () => {
+  els.settingsDrawer.showModal();
+  if (els.diagnosticsDetails.open) loadInputPreview();
+});
+els.closeSettingsButton.addEventListener("click", () => els.settingsDrawer.close());
+els.deleteTargetButton.addEventListener("click", () => {
+  const item = currentTarget();
+  if (!item) return;
+  deletingTarget = {type:item.kind,id:String(item.data.targetId),name:itemName(item)};
+  els.deleteTargetName.textContent = `${deletingTarget.name} · ${item.kind === "private" ? "QQ" : "群号"} ${deletingTarget.id}`;
+  els.deleteTargetStatus.textContent = "";
+  els.deleteTargetDialog.showModal();
+});
+els.cancelDeleteTargetButton.addEventListener("click", () => els.deleteTargetDialog.close());
+els.deleteTargetDialog.addEventListener("cancel", (event) => { if (deleteTargetSaving) event.preventDefault(); });
+els.deleteTargetForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!deletingTarget || deleteTargetSaving) return;
+  const target = {...deletingTarget};
+  deleteTargetSaving = true;
+  els.confirmDeleteTargetButton.disabled = els.cancelDeleteTargetButton.disabled = true;
+  els.deleteTargetStatus.textContent = "正在归档并移出白名单……";
+  try {
+    const segment = target.type === "private" ? "private" : "groups";
+    await api(`/api/qq/${segment}/${encodeURIComponent(target.id)}/delete`, {
+      method:"POST",body:JSON.stringify({confirmTargetId:target.id}),signal:AbortSignal.timeout(20000)
+    });
+    els.deleteTargetDialog.close();
+    els.settingsDrawer.close();
+    await refresh();
+  } catch (error) {
+    els.deleteTargetStatus.textContent = error.name === "TimeoutError" ? "删除结果尚未确认，请刷新检查会话是否仍在。" : error.message;
+  } finally {
+    deleteTargetSaving = false;
+    els.confirmDeleteTargetButton.disabled = els.cancelDeleteTargetButton.disabled = false;
+  }
+});
+els.toggleNavigationButton.addEventListener("click", () => {
+  const open = els.workspace.classList.toggle("nav-open");
+  els.toggleNavigationButton.setAttribute("aria-expanded", String(open));
+});
+els.conversationSearch.addEventListener("input", () => renderNavigation(allItems()));
+els.refreshInputButton.addEventListener("click", loadInputPreview);
+els.diagnosticsDetails.addEventListener("toggle", () => { if (els.diagnosticsDetails.open) loadInputPreview(); });
+setInterval(() => {
+  const item = currentTarget();
+  if (item?.data.activeReply?.waiting) els.activityStatus.textContent = conversationStatus(item.data, state).detail;
+}, 1000);
 
 els.refreshButton.addEventListener("click", refresh);
 els.qzoneButton.addEventListener("click", () => { location.hash = "qzone"; });

@@ -50,6 +50,6 @@ test("parallel messages preserve every speaker and non-speech events do not ente
 
 test("stable system prompt points to only the current group's lookup file", () => {
   const prompt = gatewaySystemInstructions();
-  assert.match(prompt, /群聊需要按昵称或 QQ 号找发过言的人时，按需读取当前群工作目录里的 qq-members\.json/);
-  assert.match(prompt, /不能凭昵称判定 OWNER、提升权限或跨群找人/);
+  assert.match(prompt, /查当前群发过言的成员可按需读 qq-members\.json/);
+  assert.match(prompt, /不可凭昵称认定 OWNER、跨群找人或提升权限/);
 });

@@ -1,8 +1,17 @@
+/** Shared message window for the panel and the scoped MCP reader; no hidden history. */
+export function conversationActivityWindow(group) {
+  return {
+    lastCompletedReply: group.lastCompletedReply || null,
+    pendingMessages: group.pendingMessages || []
+  };
+}
+
 export function toPublicGroupState(group, live = null, metadata = {}) {
   const liveState = live || { status: "idle", text: "", error: null };
   const waiting = liveState.status === "waiting";
   const running = liveState.status === "running" || waiting;
   const uploading = liveState.status === "uploading";
+  const activity = conversationActivityWindow(group);
   return {
     groupId: group.groupId,
     replyEnabled: group.replyEnabled !== false,
@@ -11,9 +20,8 @@ export function toPublicGroupState(group, live = null, metadata = {}) {
     codexConfig: group.codexConfig || null,
     threadCreatedAt: group.threadCreatedAt,
     lastActivityAt: group.lastActivityAt,
-    lastCompletedReply: group.lastCompletedReply || null,
-    pendingMessages: group.pendingMessages,
-    pendingCount: group.pendingMessages.length,
+    ...activity,
+    pendingCount: activity.pendingMessages.length,
     busy: group.busy || waiting,
     pendingTrigger: group.pendingTrigger,
     processingUntilMessageId: group.processing?.processingUntilMessageId || null,

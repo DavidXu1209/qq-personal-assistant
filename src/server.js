@@ -19,6 +19,8 @@ import { QqMediaManager } from "./qq/media-manager.js";
 import { QqStickerStore } from "./qq/sticker-store.js";
 import { EphemeralStickerLabeler } from "./qq/sticker-labeler.js";
 import { AgentTaskGate } from "./qq/agent-task-gate.js";
+import { TargetUpdateStream } from "./qq/target-update-stream.js";
+import { removeGatewayTarget, targetBusyForRemoval } from "./qq/target-removal.js";
 import { EphemeralStickerCurator, StickerCurationCoordinator } from "./qq/sticker-curator.js";
 import { isUsableStickerDescription } from "./qq/sticker-label.js";
 import { QzoneCoordinator } from "./qq/qzone-coordinator.js";
@@ -160,6 +162,17 @@ const stickerLabelSettingsStore = new StickerLabelSettingsStore({
 await stickerLabelSettingsStore.init();
 const qzoneStore = new QzoneStore({ filePath: qzoneStorePath });
 await qzoneStore.init();
+// Finish any interrupted removal before deriving subscription targets.
+for (const type of ["group", "private"]) {
+  for (const id of targetAllowlist.removed(type)) {
+    await subscriptionStore.removeTarget(type, id);
+    if (type === "group") await store.removeConversation(id);
+  }
+}
+const initialQzoneBinding = qzoneStore.snapshot();
+if (initialQzoneBinding.targetType && targetAllowlist.isRemoved(initialQzoneBinding.targetType, initialQzoneBinding.targetId)) {
+  await qzoneStore.configure({});
+}
 const sourceTargetCollisions = subscriptionStore.sourceGroupIds().filter((groupId) => allowedGroups.includes(groupId));
 if (sourceTargetCollisions.length) throw new Error(`A QQ group cannot be both AGENT_CHAT_GROUP and READ_ONLY_SOURCE_GROUP: ${sourceTargetCollisions.join(", ")}`);
 
@@ -176,9 +189,11 @@ for (const groupId of subscriptionStore.sourceGroupIds()) {
     .catch((error) => console.warn(`QQ source member directory initialization failed for ${groupId}: ${error.message}`));
 }
 
-const configuredPrivateIds = uniqueStrings([OWNER_QQ_ID, ...targetAllowlist.list("private"), ...subscriptionStore.privateTargetIds()]);
+const configuredPrivateIds = uniqueStrings([OWNER_QQ_ID, ...targetAllowlist.list("private"), ...subscriptionStore.privateTargetIds()])
+  .filter((id) => !targetAllowlist.isRemoved("private", id));
 const privateStore = new SessionStore({ filePath: privateSessionStorePath, defaultCodexConfig });
 await privateStore.init({ allowedGroups: configuredPrivateIds });
+for (const id of targetAllowlist.removed("private")) await privateStore.removeConversation(id);
 const personaStore = new PersonaStore({
   corePath: personaCorePath,
   examplesPath: personaExamplesPath,
@@ -194,6 +209,7 @@ const oneBot = new OneBotClient({
   baseUrl: oneBotBaseUrl, accessToken: oneBotAccessToken, readOnlyGroupIds: subscriptionStore.sourceGroupIds(),
   fileUploadTimeoutMs: Number(process.env.CODEX_REMOTE_CONTACT_QQ_FILE_UPLOAD_TIMEOUT_MS || settings.qq?.files?.uploadTimeoutMs || 6 * 60 * 60 * 1000),
   canReply: (type, id) => {
+    assertTarget(type, id);
     (type === "private" ? privateStore : store).assertReplyEnabled(id);
     return true;
   }
@@ -258,7 +274,8 @@ const codex = engineKind === "codex"
       model: codexModel,
       effort: codexEffort,
       systemPrompt: personaStore.systemPromptForClient(),
-      timeoutMs: agentTimeoutMs
+      timeoutMs: agentTimeoutMs,
+      onTurnEvent: (event) => recordEvent({ ...event, at: new Date().toISOString() })
     });
 console.log(`agent engine: ${engineKind} (model=${codexModel}, effort=${codexEffort})`);
 let codexModels = engineKind === "workbuddy"
@@ -276,6 +293,8 @@ await stickerLabeler.init();
 
 const sseClients = new Set();
 const recentEvents = [];
+const removingTargets = new Set();
+const targetUpdateStream = new TargetUpdateStream({ emit: publishTargetUpdate });
 const triggerManager = new TriggerManager({ store, allowedGroups, periodicMinutes: periodicTriggerMinutes });
 const privateTriggerManager = new TriggerManager({ store: privateStore, allowedGroups: null });
 const taskGate = new AgentTaskGate();
@@ -291,14 +310,14 @@ const worker = new GroupWorker({
   targetNameResolver: (groupId) => groupMetadata[groupId]?.groupName || null,
   sharedWorkspaceRoot: groupWorkspaceRoot,
   taskGate,
-  canRun: () => agentDispatchStore.isEnabled(),
+  canRun: (id) => agentDispatchStore.isEnabled() && allowedGroups.includes(String(id)) && !removingTargets.has(`group:${id}`),
   onEvent: recordEvent
 });
 const privateWorker = new PrivateWorker({
   store: privateStore, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager: privateTriggerManager, subscriptionStore, automationClient, persona: personaStore,
   targetNameResolver: (userId) => privateMetadata[userId]?.displayName || null,
   taskGate,
-  canRun: () => agentDispatchStore.isEnabled(),
+  canRun: (id) => agentDispatchStore.isEnabled() && !targetAllowlist.isRemoved("private", id) && !removingTargets.has(`private:${id}`),
   onEvent: recordEvent
 });
 const qzone = new QzoneCoordinator({
@@ -398,6 +417,15 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, publicState());
+    return;
+  }
+  const diagnosticsMatch = /^\/api\/qq\/(groups|private)\/(\d+)\/diagnostics$/u.exec(url.pathname);
+  if (req.method === "GET" && diagnosticsMatch) {
+    const type = diagnosticsMatch[1] === "private" ? "private" : "group";
+    const id = diagnosticsMatch[2];
+    assertTarget(type, id);
+    const conversation = (type === "private" ? privateStore : store).snapshot(id);
+    sendJson(res, 200, { diagnostics: codex.diagnostics?.snapshot(conversation.threadId, { includeInput: true }) || null });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/qq/persona/name") {
@@ -620,6 +648,44 @@ async function handleApi(req, res, url) {
     sendJson(res, 202, { status: "accepted", targetType, targetId, messageId: message.messageId });
     return;
   }
+  const deleteTarget = /^\/api\/qq\/(groups|private)\/(\d+)\/delete$/u.exec(url.pathname);
+  if (req.method === "POST" && deleteTarget) {
+    const type = deleteTarget[1] === "private" ? "private" : "group";
+    const id = validateQqId(deleteTarget[2], "Target QQ id");
+    const body = parseJson(rawBody);
+    if (String(body.confirmTargetId || "") !== id) throw new HttpError(400, "请确认要删除的会话 QQ 号或群号");
+    const key = `${type}:${id}`;
+    if (removingTargets.has(key)) throw new HttpError(409, "这个会话正在删除，请稍后刷新");
+    const targetStore = type === "private" ? privateStore : store;
+    const targetWorker = type === "private" ? privateWorker : worker;
+    const conversation = targetStore.listGroups().find((item) => item.groupId === id);
+    if (!conversation && !targetAllowlist.isRemoved(type, id)) throw new HttpError(404, "会话不存在");
+    if (targetBusyForRemoval(targetWorker, conversation, qzone.activityFor(type, id))) {
+      throw new HttpError(409, "会话还有回复、接话、动态或表情任务。请先终止或等待任务完成再删除");
+    }
+    removingTargets.add(key);
+    try {
+      const result = await removeGatewayTarget({ type, id, targetStore, subscriptions:subscriptionStore,
+        allowlist:targetAllowlist,archiveDir:join(dataDir,"removed-targets"),qzoneStore,
+        onDisabled: () => {
+          if (type === "group") {
+            const index = allowedGroups.indexOf(id);
+            if (index >= 0) allowedGroups.splice(index,1);
+            delete groupMetadata[id];
+          } else delete privateMetadata[id];
+          (type === "private" ? privateTriggerManager : triggerManager).disallowGroup(id);
+        }
+      });
+      targetWorker.live.delete(id);
+      targetWorker.followup.cancelled.delete(id);
+      oneBot.setReadOnlyGroupIds(subscriptionStore.sourceGroupIds());
+      await mediaManager.removeMessages(result.removedMessages);
+      threadReservations.reconcile().catch((error) => console.warn(`Thread lock refresh after removal failed: ${error.message}`));
+      recordEvent({type:"target-deleted",targetType:type,targetId:id,at:new Date().toISOString()});
+      sendJson(res,200,{removed:true,targetType:type,targetId:id,archived:Boolean(result.archiveFile),subscriptionCount:result.subscriptionCount});
+    } finally { removingTargets.delete(key); }
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/qq/groups/available") {
     let joined;
     try { joined = await oneBot.getGroupList(); }
@@ -635,6 +701,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/qq/groups") {
     const body = parseJson(rawBody);
     const groupId = validateQqId(body.groupId, "QQ group id");
+    if (removingTargets.has(`group:${groupId}`)) throw new HttpError(409, "这个会话正在删除，请稍后再添加");
     if (allowedGroups.includes(groupId)) throw new HttpError(409, "这个群已经在 Agent 白名单中");
     if (subscriptionStore.sourceGroupIds().includes(groupId)) throw new HttpError(409, "只读通知源不能同时加入 Agent 群白名单");
     let joined;
@@ -659,10 +726,12 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/qq/private-chats") {
     const body = parseJson(rawBody);
     const userId = validateQqId(body.userId, "Private QQ user id");
+    if (removingTargets.has(`private:${userId}`)) throw new HttpError(409, "这个会话正在删除，请稍后再添加");
     if (userId === AGENT_QQ_ID) throw new HttpError(400, "不能把机器人自己的 QQ 号加入私聊白名单");
     if (privateStore.listGroups().some((item) => item.groupId === userId)) throw new HttpError(409, "这个 QQ 号已经在 Agent 私聊白名单中");
     await targetAllowlist.add("private", userId);
     await privateStore.addConversation(userId);
+    privateTriggerManager.allowGroup(userId);
     privateMetadata[userId] ||= { displayName: String(body.displayName || "").trim() || null };
     refreshPrivateMetadata(userId).catch(() => {});
     recordEvent({ type: "private-target-created", userId, at: new Date().toISOString() });
@@ -713,6 +782,7 @@ async function handleOneBotEvent(payload) {
   if (payload.message_type === "private") return handlePrivateMessage(payload);
   const message = normalizeOneBotGroupMessage(payload);
   const isSource = subscriptionStore.sourceGroupIds().includes(message.groupId);
+  if (removingTargets.has(`group:${message.groupId}`)) return {status:"ignored",reason:"Conversation is being removed"};
   if (!isSource && !allowedGroups.includes(message.groupId)) return { status: "ignored", reason: "Group is not managed" };
   if (isSource ? subscriptionStore.isSourceRecalled(message.groupId, message.messageId)
     : store.isRecalled(message.groupId, message.messageId)) return { status: "ignored", reason: "Message was recalled" };
@@ -720,6 +790,9 @@ async function handleOneBotEvent(payload) {
   await groupMemberDirectory.record(message, payload.sender)
     .catch((error) => console.warn(`QQ member directory update failed for ${message.groupId}: ${error.message}`));
   await hydrateMessage(payload, message);
+  if (!isSource && (!allowedGroups.includes(message.groupId) || removingTargets.has(`group:${message.groupId}`))) {
+    return {status:"ignored",reason:"Conversation was removed"};
+  }
   if (isSource) {
     const result = await subscriptionStore.appendSourceMessage(message);
     if (result.recalled || result.duplicate) return { status: "ignored", reason: "Source message was recalled or duplicated" };
@@ -739,9 +812,11 @@ async function handleOneBotEvent(payload) {
       at: new Date().toISOString()
     });
   }
+  if (!allowedGroups.includes(message.groupId) || removingTargets.has(`group:${message.groupId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const stored = await store.appendMessage(message);
   if (!stored) return { status: "ignored", reason: "Message was recalled" };
   await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
+  if (!allowedGroups.includes(message.groupId) || removingTargets.has(`group:${message.groupId}`)) return {status:"ignored",reason:"Conversation was removed"};
   recordEvent({ type: "message", groupId: stored.groupId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
   if (control) await triggerManager.request(stored.groupId, "control", stored);
@@ -752,6 +827,7 @@ async function handleOneBotEvent(payload) {
     if (qzone.shouldWakeForOwnerRequest(stored, "group", stored.groupId)) await triggerManager.request(stored.groupId, "mention", stored);
     else await triggerManager.considerMessage(stored);
   }
+  if (!allowedGroups.includes(stored.groupId) || removingTargets.has(`group:${stored.groupId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const group = store.snapshot(stored.groupId);
   return { status: "accepted", groupId: stored.groupId, messageId: stored.messageId, pendingMessages: group.pendingMessages.length, trigger: group.pendingTrigger?.reason || null };
 }
@@ -842,9 +918,11 @@ async function handleGroupPoke(payload) {
   } catch {
     // A poke must still wake the Agent if QQ member metadata is temporarily unavailable.
   }
+  if (!allowedGroups.includes(groupId) || removingTargets.has(`group:${groupId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const stored = await store.appendMessage(message);
   recordEvent({ type: "poke", groupId, message: stored, at: new Date().toISOString() });
   await triggerManager.considerMessage(stored);
+  if (!allowedGroups.includes(groupId) || removingTargets.has(`group:${groupId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const group = store.snapshot(groupId);
   return {
     status: "accepted",
@@ -857,12 +935,14 @@ async function handleGroupPoke(payload) {
 
 async function handlePrivateMessage(payload) {
   const message = normalizeOneBotPrivateMessage(payload);
+  if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const known = privateStore.listGroups().some((item) => item.groupId === message.senderId);
   if (!known && message.senderId !== OWNER_QQ_ID) return { status: "ignored", reason: "Private Agent chat is not configured" };
   if (rememberMessage(`private:${message.messageId}`)) return { status: "ok", duplicate: true };
   if (known && privateStore.isRecalled(message.senderId, message.messageId)) return { status: "ignored", reason: "Message was recalled" };
   message.mentionedBot = true;
   await hydrateMessage(payload, message);
+  if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const collectedStickers = await stickerManager.collectFromMessage(message, {
     contextMessages: known ? privateStore.snapshot(message.senderId).pendingMessages : []
   });
@@ -874,11 +954,14 @@ async function handlePrivateMessage(payload) {
       at: new Date().toISOString()
     });
   }
-  await privateStore.addConversation(message.senderId);
+  if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
+  if (!known) await privateStore.addConversation(message.senderId);
+  if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   privateMetadata[message.senderId] ||= { displayName: message.senderName || null };
   const stored = await privateStore.appendMessage(message);
   if (!stored) return { status: "ignored", reason: "Message was recalled" };
   await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
+  if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   recordEvent({ type: "private-message", userId: stored.senderId, message: stored, at: new Date().toISOString() });
   const control = parseOwnerControlCommand(stored);
   if (control) await privateTriggerManager.request(stored.senderId, "control", stored);
@@ -888,6 +971,7 @@ async function handlePrivateMessage(payload) {
     }
     await privateTriggerManager.request(stored.senderId, "mention", stored);
   }
+  if (targetAllowlist.isRemoved("private",stored.senderId) || removingTargets.has(`private:${stored.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   const conversation = privateStore.snapshot(stored.senderId);
   return { status: "accepted", userId: stored.senderId, messageId: stored.messageId, pendingMessages: conversation.pendingMessages.length, trigger: conversation.pendingTrigger?.reason || null };
 }
@@ -999,6 +1083,7 @@ function publicState() {
     const view = toPublicGroupState(group, liveByGroup[group.groupId], groupMetadata[group.groupId]);
     return [group.groupId, {
       ...view,
+      diagnostics: codex.diagnostics?.snapshot(group.threadId) || null,
       qzoneActivity: qzone.activityFor("group", group.groupId),
       targetType: "group",
       targetId: group.groupId,
@@ -1007,11 +1092,12 @@ function publicState() {
       subscriptions: subscriptionStore.listSubscriptions({ targetType: "group", targetId: group.groupId })
     }];
   }));
-  const privateChats = Object.fromEntries(privateStore.listGroups().map((conversation) => {
+  const privateChats = Object.fromEntries(privateStore.listGroups().filter((item) => !targetAllowlist.isRemoved("private",item.groupId)).map((conversation) => {
     const metadata = privateMetadata[conversation.groupId] || {};
     const view = toPublicGroupState(conversation, liveByPrivate[conversation.groupId], { groupName: metadata.displayName || null });
     return [conversation.groupId, {
       ...view,
+      diagnostics: codex.diagnostics?.snapshot(conversation.threadId) || null,
       qzoneActivity: qzone.activityFor("private", conversation.groupId),
       userId: conversation.groupId,
       displayName: metadata.displayName || null,
@@ -1076,6 +1162,7 @@ async function checkSubscriptionSchedule() {
     const separator = key.indexOf(":");
     const targetType = key.slice(0, separator);
     const targetId = key.slice(separator + 1);
+    if (targetAllowlist.isRemoved(targetType,targetId) || removingTargets.has(key)) continue;
     if (targetType === "group" && !allowedGroups.includes(targetId)) continue;
     if (targetType === "private" && !privateStore.listGroups().some((item) => item.groupId === targetId)) await privateStore.addConversation(targetId);
     const targetStore = targetType === "private" ? privateStore : store;
@@ -1209,6 +1296,7 @@ async function maintenanceState() {
 
 function assertTarget(targetType, targetId) {
   validateQqId(targetId, "Target QQ id");
+  if (targetAllowlist.isRemoved(targetType,targetId) || removingTargets.has(`${targetType}:${targetId}`)) throw new HttpError(404,"会话已移除或正在删除");
   if (targetType === "group" && !allowedGroups.includes(String(targetId))) throw new HttpError(404, "Unknown Agent group");
   if (targetType === "private" && !privateStore.listGroups().some((item) => item.groupId === String(targetId))) throw new HttpError(404, "Unknown private Agent chat");
 }
@@ -1271,7 +1359,7 @@ function reservationTargets() {
     ...store.listGroups()
       .filter((conversation) => allowedGroups.includes(conversation.groupId))
       .map((conversation) => reservationTarget("group", conversation)),
-    ...privateStore.listGroups().map((conversation) => reservationTarget("private", conversation))
+    ...privateStore.listGroups().filter((item) => !targetAllowlist.isRemoved("private",item.groupId)).map((conversation) => reservationTarget("private", conversation))
   ];
 }
 
@@ -1387,7 +1475,23 @@ function referencedMedia() {
   return [...store.referencedImages(), ...privateStore.referencedImages(), ...sourceMedia];
 }
 
+function publishTargetUpdate(keys) {
+  const snapshot = publicState();
+  const targets = Object.fromEntries(keys.flatMap((key) => {
+    const [kind, id] = key.split(":");
+    const target = (kind === "private" ? snapshot.qq.privateChats : snapshot.qq.groups)[id];
+    return target ? [[key, target]] : [];
+  }));
+  broadcast({ type: "target-update", targets, activeTargets: snapshot.qq.activeTargets, activeGroups: snapshot.qq.activeGroups });
+}
+
 function recordEvent(event) {
+  if (["delta", "private-delta", "agent-progress"].includes(event.type)) {
+    const id = String(event.userId || event.groupId || "");
+    const key = event.userId ? `private:${id}` : id.startsWith("private:") ? id : `group:${id}`;
+    targetUpdateStream.queue(key);
+    return;
+  }
   recentEvents.unshift(safeEvent(event));
   recentEvents.splice(100);
   broadcast({ type: "event", event: safeEvent(event), state: publicState() });

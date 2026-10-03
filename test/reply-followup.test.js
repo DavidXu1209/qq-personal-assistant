@@ -275,6 +275,16 @@ test("private conversations use the same repeatable observation lifecycle", asyn
   assert.deepEqual(f.sent, ["本轮回复"]);
 });
 
+test("an orphaned trigger without pending messages is retired instead of spinning a worker", async (t) => {
+  const f = await fixture(t, "private");
+  await f.store.beginWork(f.targetId);
+  await f.store.completeAgentWork(f.targetId, { reply: "", turnId: "done", trigger: { reason: "mention" }, messages: [] });
+  await f.store.requestTrigger(f.targetId, "mention", { messageId: "missing", sequence: 1, senderId: f.targetId, trust: "UNTRUSTED" });
+  assert.equal(f.store.snapshot(f.targetId).pendingMessages.length, 0);
+  assert.equal(await f.store.beginWork(f.targetId), null);
+  assert.equal(f.store.snapshot(f.targetId).pendingTrigger, null);
+});
+
 test("real group and private workers queue followups behind the active turn and master switch", async (t) => {
   for (const Worker of [GroupWorker, PrivateWorker]) {
     const f = await fixture(t, Worker === PrivateWorker ? "private" : "group", OWNER_QQ_ID);
@@ -330,6 +340,41 @@ test("private followup permission is scoped to the actual OWNER target, never so
   assert.equal(privateSandbox(OWNER_QQ_ID, { reason: "followup" }).turnSandbox.type, "dangerFullAccess");
   assert.equal(privateSandbox("67890", { reason: "followup", trust: "OWNER" }).turnSandbox.type, "readOnly");
   assert.equal(privateSandbox(OWNER_QQ_ID, { reason: "subscription_auto", trust: "OWNER" }).turnSandbox.type, "readOnly");
+});
+
+test("non-owner private Agent turns use scoped QQ MCP without embedding all stickers", async (t) => {
+  const f = await fixture(t, "private", "12345");
+  await f.store.setCodexConfig(f.targetId, { workingMode: "agent", permissionMode: "dangerFullAccess" });
+  const stickerId = "st_abcdef123456";
+  let seenPrompt = "";
+  const codex = {
+    supportsQqMcp: true,
+    supportsSystemPrompt: true,
+    async startThread() { return "private-read-only-thread"; },
+    async runTurn({ prompt, turnSandbox, qqToolContext }) {
+      seenPrompt = prompt;
+      assert.equal(turnSandbox.type, "readOnly");
+      assert.equal(qqToolContext.liveMode, true);
+      assert.equal(qqToolContext.allowImages, false);
+      assert.equal((await qqToolContext.liveTool("read_messages", {}, f.active)).isError, false);
+      const reactions = await qqToolContext.liveTool("list_reactions", {}, f.active);
+      assert.equal(reactions.isError, false);
+      assert.match(reactions.content[0].text, new RegExp(stickerId));
+      assert.equal((await qqToolContext.liveTool("end_conversation", {}, f.active)).isError, false);
+      return { text: "", turnId: "private-read-only-turn", compacted: false };
+    }
+  };
+  const worker = new PrivateWorker({
+    store: f.store, codex, oneBot: {},
+    mediaManager: { async removeMessages() {} },
+    stickerManager: { promptCatalog: () => [{ id: stickerId, usage: "适合觉得好笑时使用" }] },
+    triggerManager: new TriggerManager({ store: f.store, clock: f.clock })
+  });
+  await worker.runAgent(f.targetId, await f.store.beginWork(f.targetId));
+  assert.match(seenPrompt, /网关预读取结果|本轮权限/);
+  assert.doesNotMatch(seenPrompt, new RegExp(stickerId));
+  assert.doesNotMatch(seenPrompt, /当前可用 QQ 原生表情包/);
+  assert.equal(f.store.snapshot(f.targetId).lastError, null);
 });
 
 test("active wait wakes directly on new text rather than waiting out thirty seconds", async (t) => {

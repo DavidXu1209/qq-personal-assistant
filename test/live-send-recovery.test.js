@@ -14,6 +14,8 @@ test("unsent final text gets one same-thread MCP chance, never a gateway send", 
   assert.equal(requests.length, 2);
   assert.equal(requests[1].qqToolContext, context);
   assert.equal(requests[1].prefetchQqMessages, false);
+  assert.equal(requests[1].refreshClientBeforeTurn, true);
+  assert.equal(requests[1].turnTimeoutMs, 120_000);
   assert.deepEqual(requests[1].imagePaths, []);
   assert.match(requests[1].prompt, /亲自调用.*发送工具/);
   assert.equal(result.turnId, "second");
@@ -36,4 +38,26 @@ test("recovery never runs after a sent action, explicit end, empty answer or fai
     qqToolContext: { liveMode: true, readCalled: true, actionCount: 0 }
   });
   assert.equal(count, 1);
+});
+
+test("explicit NO_REPLY is a successful silent decision, not another model round", async () => {
+  let calls = 0;
+  const result = await runLiveTurnWithSendRecovery(async () => {
+    calls++;
+    return { text: " NO_REPLY\n", compacted: true };
+  }, { qqToolContext: { liveMode: true, readCalled: true, actionCount: 0 } });
+  assert.equal(calls, 1);
+  assert.equal(result.text, "");
+  assert.equal(result.compacted, true);
+});
+
+test("silent marker never hides failed reads or non-live structured tasks", async () => {
+  for (const context of [
+    { liveMode: true, readCalled: false, actionCount: 0 },
+    { liveMode: true, readCalled: true, failed: true, actionCount: 0 },
+    { liveMode: false, readCalled: true, actionCount: 0 }
+  ]) {
+    const result = await runLiveTurnWithSendRecovery(async () => ({ text: "NO_REPLY" }), { qqToolContext: context });
+    assert.equal(result.text, "NO_REPLY");
+  }
 });

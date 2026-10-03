@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, write
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { recoverStaleColima } from "../scripts/colima-stale-state.mjs";
+import { colimaStatusReady } from "../scripts/colima-status-probe.mjs";
 import { QqFileManager } from "../src/qq/file-manager.js";
 
 async function fixture(t) {
@@ -97,9 +98,23 @@ test("Hub startup never starts or stops the VM and the separate QQ job retries i
   assert.doesNotMatch(hub, /COLIMA_BIN|DOCKER_BIN|colima.*start|docker.*start/);
   assert.match(hub, /exec "\$NODE_BIN" src\/server\.js/);
   assert.match(qq, /colima-stale-state\.mjs/);
+  assert.match(qq, /colima-status-probe\.mjs/);
   assert.doesNotMatch(qq, /--force|^\s*(kill|delete|prune|rm)\s/m);
   assert.match(plist, /<key>StartInterval<\/key><integer>60<\/integer>/);
   assert.match(plist, /<key>RunAtLoad<\/key><true\/>/);
+});
+
+test("Colima status check is bounded and a failed probe defers to safe recovery", async () => {
+  let received = null;
+  assert.equal(await colimaStatusReady({ executable: "/opt/homebrew/bin/colima", profile: "snowluma", run: async (...args) => {
+    received = args;
+    return { stdout: "running" };
+  } }), true);
+  assert.deepEqual(received[1], ["status", "--profile", "snowluma"]);
+  assert.equal(received[2].timeout, 20_000);
+  assert.equal(await colimaStatusReady({ executable: "/opt/homebrew/bin/colima", profile: "snowluma", run: async () => {
+    throw new Error("status timed out");
+  } }), false);
 });
 
 test("offline staging initialization can retry when QQ returns without clearing live jobs", async () => {

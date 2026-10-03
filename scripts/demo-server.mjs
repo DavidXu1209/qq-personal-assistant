@@ -49,9 +49,7 @@ const state = {
       {value:200000,label:"轻量 · 200K",description:"保留近期细节并自动压缩"}
     ],
     workModeOptions: [
-      {value:"agent",label:"Agent · 执行任务",description:"按当前权限使用工具并执行任务"},
-      {value:"plan",label:"Plan · 制定计划",description:"只读分析和制定计划，不直接修改文件"},
-      {value:"ask",label:"Ask · 问答",description:"只读查阅与回答，不执行修改"}
+      {value:"agent",label:"Agent · 执行任务",description:"按当前权限使用工具并执行任务"}
     ],
     permissionModeOptions: [
       {value:"readOnly",label:"只读",targetTypes:["group","private"],description:"不修改本机文件"},
@@ -137,7 +135,7 @@ const server = createServer(async (req,res) => {
     const [label,color] = tiles.get(path.split("/")[4]) || ["?","#888"];
     res.setHeader("Content-Type","image/svg+xml");
     res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="220" viewBox="0 0 320 220"><rect width="320" height="220" rx="24" fill="'+color+'"/><circle cx="160" cy="98" r="62" fill="#fff" fill-opacity=".85"/><text x="160" y="118" text-anchor="middle" font-family="sans-serif" font-size="50" font-weight="700" fill="#182635">'+label+'</text><text x="160" y="195" text-anchor="middle" font-family="sans-serif" font-size="16" fill="#182635">DEMO · 示例表情</text></svg>');
-  } else if (["/","/client.html","/index.html","/client.css","/client.js"].includes(path)) {
+  } else if (["/","/client.html","/index.html","/client.css","/client.js","/client-status.js"].includes(path)) {
     const file = path === "/" || path === "/index.html" ? "client.html" : path.slice(1);
     res.setHeader("Content-Type",file.endsWith(".js")?"text/javascript":file.endsWith(".css")?"text/css":"text/html");
     res.end(await readFile(resolve(root,file)));

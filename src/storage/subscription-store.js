@@ -154,6 +154,18 @@ export class SubscriptionStore {
     return { deleted: true, removedMessages };
   }
 
+  // Called only after the target is blocked and has no active worker. An
+  // archived failed-delivery claim may also be discarded by this explicit removal.
+  async removeTarget(targetType, targetId) {
+    const subscriptions = Object.values(this.state.subscriptions)
+      .filter((item) => item.targetType === targetType && item.targetId === String(targetId));
+    for (const item of subscriptions) delete this.state.subscriptions[item.id];
+    const removedMessages = [...new Set(subscriptions.map((item) => item.sourceGroupId))]
+      .flatMap((id) => this.garbageCollectSource(id));
+    if (subscriptions.length) await this.save();
+    return { count: subscriptions.length, removedMessages };
+  }
+
   async setSourceMetadata(groupId, metadata = {}) {
     const source = this.ensureSource(groupId);
     source.groupName = String(metadata.groupName || "").trim() || source.groupName;

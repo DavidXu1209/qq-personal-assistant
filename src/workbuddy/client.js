@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { handleQqMcpTool } from "../qq/mcp-actions.js";
 import { prepareLiveConversationPrompt } from "../qq/live-conversation.js";
+import { TurnDiagnostics } from "./turn-diagnostics.js";
 
 /**
  * WorkBuddy 引擎客户端
@@ -83,6 +84,7 @@ export class WorkBuddyClient {
     idleTimeoutMs = 3 * 60 * 1000,
     compactionTimeoutMs = 6 * 60 * 1000,
     env = process.env,
+    onTurnEvent = () => {},
   } = {}) {
     this.python =
       python ||
@@ -97,6 +99,8 @@ export class WorkBuddyClient {
     this.idleTimeoutMs = idleTimeoutMs;
     this.compactionTimeoutMs = compactionTimeoutMs;
     this.env = env;
+    this.onTurnEvent = onTurnEvent;
+    this.diagnostics = new TurnDiagnostics();
     this.child = null;
     this.startPromise = null;
     this.buffer = "";
@@ -178,16 +182,19 @@ export class WorkBuddyClient {
         if (!active || active.cancelRequested) {
           result = { isError: true, content: [{ type: "text", text: "当前 WorkBuddy 会话没有可用的 QQ 轮次。" }] };
         } else if (active.qqToolContext?.liveMode) {
+          this.reportProgress(active, "tool", input.name);
           const run = () => active.qqToolContext.liveTool(input.name, input.arguments || {}, active);
           active.mcpChain = active.mcpChain.then(run, run);
           result = await active.mcpChain;
         } else if (["read_forward_messages", "read_link"].includes(input.name) && active.qqToolContext?.messageReader) {
+          this.reportProgress(active, "tool", input.name);
           result = active.qqToolContext.sourceReadCalled
             ? await active.qqToolContext.messageReader.callTool(input.name, input.arguments || {}, {
                 shouldStop: () => active.cancelRequested || active.qqToolContext.canRead?.() === false
               })
             : { isError: true, content: [{ type: "text", text: "请先调用 read_source_messages 读取本轮唯一通知来源。" }] };
         } else {
+          if (active) this.reportProgress(active, "tool", input.name);
           result = handleQqMcpTool({ name: input.name, args: input.arguments, context: active.qqToolContext, queued: active.mcpActions });
         }
         if (active && !active.qqToolContext?.liveMode && !result.isError && input.name === "send_message") {
@@ -334,6 +341,8 @@ export class WorkBuddyClient {
     // calls the same scoped reader and advances exactly the same read cutoff;
     // delivery, cleanup and subsequent autonomous MCP reads stay unchanged.
     if (prefetchQqMessages) prompt = await prepareLiveConversationPrompt(qqToolContext, prompt);
+    this.diagnostics.start(String(threadId), { prompt, model, groupId: String(groupId), imagePaths });
+    this.onTurnEvent({ type: "agent-input", threadId: String(threadId), groupId: String(groupId) });
     const response = await this.request("turn/start", {
       threadId,
       groupId: String(groupId),
@@ -349,9 +358,18 @@ export class WorkBuddyClient {
       sourceReadOnly: Boolean(qqToolContext?.requireSourceRead),
       systemPrompt: /^(?:sticker-(?:label|prune)|persona-style)-/u.test(String(threadId)) ? "" : this.systemPrompt,
       turnSandbox,
+    }).catch((error) => {
+      this.diagnostics.finish(String(threadId), error);
+      this.onTurnEvent({ type: "agent-finished", groupId: String(groupId), threadId: String(threadId) });
+      throw error;
     });
     const turnId = response?.turn?.id;
-    if (!turnId) throw new Error("WorkBuddy bridge did not return a turn id");
+    if (!turnId) {
+      const error = new Error("WorkBuddy bridge did not return a turn id");
+      this.diagnostics.finish(String(threadId), error);
+      this.onTurnEvent({ type: "agent-finished", groupId: String(groupId), threadId: String(threadId) });
+      throw error;
+    }
 
     return new Promise((resolve, reject) => {
       const active = {
@@ -400,6 +418,11 @@ export class WorkBuddyClient {
         .catch((error) => this.finishTurn(active, error));
     }, delay);
     active.progressTimeout.unref?.();
+  }
+
+  reportProgress(active, stage, toolName = null) {
+    this.diagnostics.progress(active.threadId, stage, toolName);
+    this.onTurnEvent({ type: "agent-progress", groupId: active.groupId, threadId: active.threadId, stage });
   }
 
   async timeoutTurn(active, reason = "WorkBuddy turn timed out") {
@@ -564,6 +587,7 @@ export class WorkBuddyClient {
       if (!active || String(params.threadId || "") !== active.threadId) return;
       const delta = String(params.delta || "");
       if (!delta) return;
+      this.reportProgress(active, "text");
       this.touchTurn(active);
       active.text += delta;
       if (!active.qqToolContext?.liveMode && !(active.mcpActions || []).some((action) => action.kind === "message")) active.onDelta?.(delta, active.text);
@@ -577,6 +601,7 @@ export class WorkBuddyClient {
           active.compacting = true;
           active.compactionDeadlineAt = Date.now() + Math.max(1, Number(this.compactionTimeoutMs) || 6 * 60 * 1000);
         }
+        this.reportProgress(active, "compacting");
         this.touchTurn(active);
       }
       return;
@@ -588,6 +613,7 @@ export class WorkBuddyClient {
         active.compacting = false;
         active.compactionDeadlineAt = null;
         active.compacted = true;
+        this.reportProgress(active, "response");
         this.touchTurn(active);
       }
       return;
@@ -596,7 +622,20 @@ export class WorkBuddyClient {
     if (message.method === "turn/progress") {
       const params = message.params || {};
       const active = this.activeByTurn.get(String(params.turnId || ""));
-      if (active && String(params.threadId || "") === active.threadId) this.touchTurn(active);
+      if (active && String(params.threadId || "") === active.threadId) {
+        this.touchTurn(active);
+        this.reportProgress(active, active.compacting ? "compacting" : params.stage || "response");
+      }
+      return;
+    }
+
+    if (message.method === "turn/usage") {
+      const params = message.params || {};
+      const active = this.activeByTurn.get(String(params.turnId || ""));
+      if (active && String(params.threadId || "") === active.threadId) {
+        this.diagnostics.usage(active.threadId, params.usage);
+        this.onTurnEvent({ type: "agent-usage", groupId: active.groupId, threadId: active.threadId });
+      }
       return;
     }
 
@@ -657,6 +696,8 @@ export class WorkBuddyClient {
     this.activeByTurn.delete(active.turnId);
     this.activeByThread.delete(active.threadId);
     this.activeByGroup.delete(active.groupId);
+    this.diagnostics.finish(active.threadId, error);
+    this.onTurnEvent({ type: "agent-finished", groupId: active.groupId, threadId: active.threadId });
     if (error) {
       if (active.compacted) error.contextCompacted = true;
       active.reject(error);

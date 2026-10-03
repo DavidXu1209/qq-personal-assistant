@@ -13,7 +13,7 @@ import {
 } from "../security/policy.js";
 import { parseQqDeliveryDirectives } from "../qq/file-directive.js";
 import { createLiveConversationTools } from "../qq/live-conversation.js";
-import { runLiveTurnWithSendRecovery } from "../qq/live-send-recovery.js";
+import { runConversationTurn } from "../qq/conversation-turn.js";
 import { QqMessageReader } from "../qq/message-reader.js";
 import { ConversationFollowup } from "../qq/conversation-followup.js";
 import { StickerLabelCoordinator } from "../qq/sticker-label-coordinator.js";
@@ -22,8 +22,7 @@ import {
   autoSubscriptionOutputSchema,
   buildAutoSubscriptionPrompt,
   formatAutomationConfirmations,
-  formatSubscriptionContexts,
-  runAutoSubscriptionTurn
+  formatSubscriptionContexts
 } from "../security/subscription-policy.js";
 
 export class GroupWorker {
@@ -259,7 +258,8 @@ export class GroupWorker {
       stickers: this.stickerManager?.promptCatalog() || [],
       canRun: () => this.canRun(groupId), onEvent: this.onEvent,
       renderMessages: (messages, { snapshot }) => buildTurnPrompt(messages, {
-        trigger, security, includeResponseInstruction: false, activeMessages: snapshot.pendingMessages
+        trigger, security, includeResponseInstruction: false, activeMessages: snapshot.pendingMessages,
+        compact: true, includePermissionNotice: false
       })
     });
   }
@@ -511,11 +511,8 @@ export class GroupWorker {
       readOnlyContextMessages: inputContexts.flatMap((context) => context.messages || []),
       renderMessages: (messages, { first, snapshot }) => [
         buildTurnPrompt(messages, { trigger: work.trigger, security, stickerCatalog: [], includeResponseInstruction: false,
-          activeMessages: snapshot.pendingMessages }),
-        ...(first ? extraReadSections : []),
-        ...(first && snapshot.liveSession?.actions?.length
-          ? [`【此前已送达 QQ、尚未清理的最近动作】${snapshot.liveSession.actions.slice(-8).map((item) => `${item.kind}: ${item.summary}`).join("；")}；不要重复发送。`]
-          : [])
+          activeMessages: snapshot.pendingMessages, compact: true, includePermissionNotice: false }),
+        ...(first ? extraReadSections : [])
       ].filter(Boolean).join("\n\n")
     }) : !autoSubscriptionTurn ? {
       targetType: "group",
@@ -559,17 +556,13 @@ export class GroupWorker {
         this.onEvent({ type: "delta", groupId, threadId, delta: autoSubscriptionTurn ? "" : delta, text: visibleText, at: new Date().toISOString() });
       }
     };
-    const autoTurn = autoSubscriptionTurn ? await runAutoSubscriptionTurn({
-      runTurn: (turnPrompt) => this.codex.runTurn({ ...turnRequest, prompt: turnPrompt }),
-      prompt, contexts: inputContexts, targetType: "group", targetId: groupId,
-      pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
-      sourceReadContext: sourceViaMcp ? qqToolContext : null
-    }) : null;
-    const result = autoTurn?.result || await runLiveTurnWithSendRecovery(
-      (request) => this.codex.runTurn(request), turnRequest, {
-        onRecovery: () => this.onEvent({ type: "send-tool-recovery", groupId, threadId, at: new Date().toISOString() })
-      }
-    );
+    const autoTurn = await runConversationTurn({ codex: this.codex, request: turnRequest,
+      autoSubscription: autoSubscriptionTurn ? { contexts: inputContexts, targetType: "group", targetId: groupId,
+        pendingMessages: work.messages, allowAutomations: codexOptions.calendarRemindersEnabled,
+        sourceReadContext: sourceViaMcp ? qqToolContext : null } : null,
+      onRecovery: () => this.onEvent({ type: "send-tool-recovery", groupId, threadId, at: new Date().toISOString() })
+    });
+    const result = autoTurn.result;
     this.store.assertReplyEnabled(groupId);
     if (useMcpRead) {
       if (qqToolContext.failed) throw new Error("本轮 QQ 操作失败；待处理消息仍保留");

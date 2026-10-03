@@ -88,6 +88,10 @@ export async function recoverStaleColima({ instanceDir, probe = probeSocket, com
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { console.log(JSON.stringify(await recoverStaleColima({ instanceDir: process.argv[2] }))); }
+  try {
+    const result = await recoverStaleColima({ instanceDir: process.argv[2] });
+    console.log(JSON.stringify(result));
+    if (["active", "active_or_unknown"].includes(result.status)) process.exitCode = 2;
+  }
   catch (error) { console.error(`Safe Colima recovery refused: ${error.message}`); process.exitCode = 1; }
 }

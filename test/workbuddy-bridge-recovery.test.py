@@ -40,6 +40,22 @@ class FakeClient:
 
 
 class BridgeRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_usage_keeps_sdk_fields_raw_and_missing_cache_unknown(self) -> None:
+        from types import SimpleNamespace
+        result = SimpleNamespace(usage={"input_tokens": 7, "output_tokens": 3}, num_turns=2)
+        self.assertEqual(BRIDGE_MODULE.result_usage(result), {
+            "inputTokens": 7, "outputTokens": 3, "cachedTokens": None,
+            "cacheCreationTokens": None, "modelCalls": 2,
+        })
+        result.usage = SimpleNamespace(input_tokens=0, output_tokens=3, cache_read_input_tokens=90,
+                                       cache_creation_input_tokens=5)
+        usage = BRIDGE_MODULE.result_usage(result)
+        self.assertEqual(usage["inputTokens"], 0)
+        self.assertEqual(usage["cachedTokens"], 90)
+        result.usage = {"input_tokens": True, "output_tokens": -1}
+        self.assertIsNone(BRIDGE_MODULE.result_usage(result)["inputTokens"])
+        self.assertIsNone(BRIDGE_MODULE.result_usage(result)["outputTokens"])
+
     def test_model_errors_are_not_successful_empty_turns(self) -> None:
         from codebuddy_agent_sdk import AssistantMessage, ResultMessage
         error = ResultMessage(subtype="error_during_execution", duration_ms=0, duration_api_ms=0,

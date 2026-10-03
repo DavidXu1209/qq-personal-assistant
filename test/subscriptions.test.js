@@ -970,6 +970,33 @@ test("WorkBuddy Agent private final text never sends without the MCP send_messag
   assert.equal(fixture.privateSessions.snapshot(OWNER_QQ_ID).lastCompletedReply, null);
 });
 
+test("periodic private Agent silence clears the messages it read without sending", async (t) => {
+  const fixture = await storesFixture(t, [], [OWNER_QQ_ID]);
+  const codex = new FakeCodex();
+  codex.supportsQqMcp = true;
+  codex.runTurn = async ({ qqToolContext }) => {
+    const read = await qqToolContext.liveTool("read_messages", {}, { turnId: "private-scheduled-silent" });
+    assert.match(read.content[0].text, /无需私聊回复/);
+    return { text: "", turnId: "private-scheduled-silent", compacted: false };
+  };
+  const sent = [];
+  const worker = new PrivateWorker({
+    store: fixture.privateSessions, codex, followupDurationMs: 0,
+    oneBot: { async sendPrivateMessage(_id, text) { sent.push(text); return { ok: true, status: 200 }; } },
+    mediaManager: { removeMessages: async () => {} },
+    triggerManager: { reconsiderPending: async () => {} }
+  });
+  const pending = await fixture.privateSessions.appendMessage({
+    ...sourceMessage("private-scheduled-silent", "无需私聊回复", "member"),
+    groupId: OWNER_QQ_ID, senderId: OWNER_QQ_ID, trust: "OWNER", source: "qq"
+  });
+  await fixture.privateSessions.requestTrigger(OWNER_QQ_ID, "scheduled", pending);
+  await worker.kick(OWNER_QQ_ID);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(fixture.privateSessions.snapshot(OWNER_QQ_ID).pendingMessages, []);
+  assert.equal(fixture.privateSessions.snapshot(OWNER_QQ_ID).lastCompletedReply, null);
+});
+
 test("read-only source groups are rejected by QQ text, image, face, poke and file APIs", async () => {
   let requests = 0;
   const oneBot = new OneBotClient({

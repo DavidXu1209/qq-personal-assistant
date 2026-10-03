@@ -35,8 +35,11 @@ for required_bin in "$COLIMA_BIN" "$DOCKER_BIN" "$NODE_BIN"; do
     exit 1
   fi
 done
-if ! "$COLIMA_BIN" status --profile "$COLIMA_PROFILE" >/dev/null 2>&1; then
-  "$NODE_BIN" "$PROJECT_DIR/scripts/colima-stale-state.mjs" "$HOME/.colima/_lima/colima-$COLIMA_PROFILE"
+if ! "$NODE_BIN" "$PROJECT_DIR/scripts/colima-status-probe.mjs" "$COLIMA_BIN" "$COLIMA_PROFILE"; then
+  if ! "$NODE_BIN" "$PROJECT_DIR/scripts/colima-stale-state.mjs" "$HOME/.colima/_lima/colima-$COLIMA_PROFILE"; then
+    echo "Colima state is active or uncertain; QQ recovery will retry on the next launchd interval." >&2
+    exit 1
+  fi
   "$COLIMA_BIN" start --profile "$COLIMA_PROFILE"
 fi
 if ! "$DOCKER_BIN" --context "$DOCKER_CONTEXT" inspect "$SNOWLUMA_CONTAINER" >/dev/null 2>&1; then

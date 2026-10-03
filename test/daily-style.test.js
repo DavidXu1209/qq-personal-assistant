@@ -133,7 +133,7 @@ test("due catchphrases publish at 04:00 without samples or a new AI thread", asy
     async startThread() { throw new Error("must not start AI"); } };
   const persona = {
     pendingCatchphrasesDue: () => pending,
-    async publishDailyUpdate(value) { published = value; pending = false; },
+    async publishDailyUpdate(value) { published = value; pending = false; return true; },
     systemPromptForClient: () => "updated persona"
   };
   const daily = new DailyStyleCoordinator({ filePath: join(directory, "samples.json"), workspaceRoot: join(directory, "jobs"),
@@ -143,4 +143,18 @@ test("due catchphrases publish at 04:00 without samples or a new AI thread", asy
   assert.deepEqual(published, { rules: null, cutoff: "2026-09-27T20:00:00.000Z", summarizedAt: now.toISOString() });
   assert.equal(prompt, "updated persona");
   assert.equal(daily.snapshot().lastCompletedCutoff, "2026-09-27T20:00:00.000Z");
+});
+
+test("unchanged daily update does not refresh the shared system prompt", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(),"qq-style-unchanged-"));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  let pending = true;
+  let refreshes = 0;
+  const daily = new DailyStyleCoordinator({filePath:join(directory,"samples.json"),workspaceRoot:join(directory,"jobs"),
+    persona:{pendingCatchphrasesDue:()=>pending,async publishDailyUpdate(){pending=false;return false;},systemPromptForClient:()=>"same prefix"},
+    codex:{setSystemPrompt(){refreshes++;}},gate:new AgentTaskGate(),clock:()=>new Date("2026-10-03T20:01:00Z")});
+  await daily.init();
+  await daily.tick();
+  assert.equal(refreshes,0);
+  assert.equal(daily.snapshot().lastCompletedCutoff,"2026-10-03T20:00:00.000Z");
 });

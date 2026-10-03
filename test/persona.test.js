@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PersonaStore } from "../src/persona/persona-store.js";
+import { PersonaStore, MAX_PERSONA_EXAMPLES, MAX_PERSONA_EXAMPLE_CHARS } from "../src/persona/persona-store.js";
 import { getAgentName, setAgentName } from "../src/security/policy.js";
 import { normalizeOneBotGroupMessage } from "../src/qq/message-normalizer.js";
 
@@ -158,4 +158,32 @@ test("edited catchphrases stay pending until next Shanghai 04:00 and can be clea
   assert.deepEqual(restored.catchphrases(), []);
   assert.doesNotMatch(restored.systemPromptForClient(), /固定口头禅/);
   await assert.rejects(restored.stageCatchphrases([{ text: "重复", when: "一" }, { text: "重复", when: "二" }]), /重复/);
+});
+
+test("scene examples are stable, bounded system instructions, never repeated per turn", async (t) => {
+  const { store } = await fixture(t);
+  store.examples = Array.from({length:40}, (_,i)=>({situation:`情况${i}`,behavior:"自行判断是否有必要接话",examples:["一句短回复","老代不必跟读"]}));
+  const prompt = store.systemPromptForClient();
+  const block = prompt.split("情境示范（")[1].split("兴趣倾向：")[0];
+  const examples = block.split("\n").filter(line=>line.includes(" → "));
+  assert.equal(examples.length,MAX_PERSONA_EXAMPLES);
+  assert.ok(examples.join("").length <= MAX_PERSONA_EXAMPLE_CHARS);
+  assert.equal(store.publicState().injectedExampleCount,MAX_PERSONA_EXAMPLES);
+  assert.equal(await store.compileTurn({includeStable:false,taskPrompt:"预读取消息"}),"预读取消息");
+  assert.equal(store.systemPromptForClient(),prompt);
+  await store.setName("小代");
+  assert.doesNotMatch(store.systemPromptForClient(),/老代不必跟读/);
+  assert.match(store.systemPromptForClient(),/小代不必跟读/);
+  t.after(()=>setAgentName("老代"));
+});
+
+test("unchanged daily summary preserves exact system prefix, but saves its completion time", async (t) => {
+  const {store,paths} = await fixture(t);
+  const rules = ["自然简短，先说结论"];
+  await store.publishStyleRules(rules);
+  const before = store.systemPromptForClient();
+  assert.equal(await store.publishDailyUpdate({rules,cutoff:"2026-10-03T20:00:00Z",summarizedAt:"2026-10-03T20:01:00Z"}),false);
+  assert.equal(store.systemPromptForClient(),before);
+  assert.equal(JSON.parse(await readFile(paths.ownerStylePath,"utf8")).styleSummarizedAt,"2026-10-03T20:01:00Z");
+  assert.equal(await store.publishDailyUpdate({rules:["允许单独表情或沉默"],cutoff:"2026-10-04T20:00:00Z"}),true);
 });

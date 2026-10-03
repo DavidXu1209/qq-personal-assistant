@@ -18,6 +18,8 @@
           </div>
         </div>
         <div class="top-actions">
+          <button id="toggleNavigationButton" class="button ghost topbar-button mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="conversationSidebar">会话</button>
+          <button id="globalSettingsButton" class="button ghost topbar-button" type="button">设置</button>
           <button id="qzoneButton" class="button ghost topbar-button" type="button" aria-pressed="false">QQ 空间</button>
           <button id="stickerGalleryButton" class="button ghost topbar-button" type="button" aria-pressed="false">
             表情展示台 <span id="stickerGalleryButtonCount" class="button-count">0</span>
@@ -35,7 +37,7 @@
       </header>
 
       <section id="workspace" class="workspace">
-        <aside class="sidebar panel" aria-label="QQ Agent 会话与通知源" tabindex="0">
+        <aside id="conversationSidebar" class="sidebar panel" aria-label="QQ Agent 会话与通知源" tabindex="0">
           <div class="sidebar-heading">
             <div>
               <p class="eyebrow">CONVERSATIONS</p>
@@ -43,6 +45,7 @@
             </div>
             <span id="groupCount" class="quiet-count">0</span>
           </div>
+          <label class="nav-search"><span class="sr-only">搜索会话或通知源</span><input id="conversationSearch" type="search" placeholder="搜索名称或 QQ 号" /></label>
 
           <div class="navigation-scroll">
             <section class="nav-section">
@@ -97,6 +100,10 @@
               <button id="sessionButton" class="button ghost" type="button">查看会话 ID</button>
               <button id="retryButton" class="button ghost" type="button">重试待处理消息</button>
               <button id="resetButton" class="button danger" type="button">新建当前会话</button>
+            </div>
+            <div class="target-remove-section">
+              <button id="deleteTargetButton" class="button danger full-button" type="button">删除网关会话</button>
+              <p id="deleteTargetHint" class="field-note">移出白名单并归档本地状态，不退群、不删好友。</p>
             </div>
           </details>
 
@@ -210,6 +217,7 @@
               <p id="activityStatus" class="activity-status" role="status">等待消息</p>
             </div>
             <div class="conversation-actions">
+              <button id="settingsButton" class="button ghost" type="button">设置与用量</button>
               <label id="replyControl" class="dispatch-control reply-control" hidden>
                 <span class="dispatch-copy"><strong id="replyEnabledLabel">允许回复</strong><small id="replyEnabledHint">仅影响当前会话</small></span>
                 <input id="replyEnabledToggle" type="checkbox" role="switch" aria-label="允许回复当前会话" checked />
@@ -236,6 +244,32 @@
           </form>
         </section>
       </section>
+
+      <dialog id="settingsDrawer" class="settings-drawer" aria-labelledby="settingsTitle">
+        <header class="settings-heading"><div><p class="eyebrow">SETTINGS &amp; DIAGNOSTICS</p><h2 id="settingsTitle">设置与用量</h2><p id="settingsTargetName" class="field-note"></p></div><button id="closeSettingsButton" class="button ghost" type="button">关闭</button></header>
+        <div class="settings-scroll">
+          <section id="conversationSettingsBody" aria-label="当前会话设置"></section>
+          <details id="diagnosticsDetails" class="session-details">
+            <summary>本轮用量与实际输入</summary>
+            <div id="usageSummary" class="usage-grid"></div>
+            <p class="field-note">SDK 原始字段；缺失显示“未提供”，不等同于 WorkBuddy 扣费。启动次数仅统计本次网关运行。输入预览不含系统提示词、历史对话或图片像素。</p>
+            <button id="refreshInputButton" class="button ghost" type="button">查看最新提交内容</button>
+            <pre id="turnInputPreview" class="persona-prompt-preview">展开后读取本轮实际提交的消息文本。</pre>
+          </details>
+          <h3 class="settings-section-title">所有会话共用</h3>
+          <section id="globalSettingsBody" aria-label="共用人格与临时任务模型"></section>
+        </div>
+      </dialog>
+
+      <dialog id="deleteTargetDialog" class="delete-target-dialog" aria-labelledby="deleteTargetTitle" aria-describedby="deleteTargetDescription">
+        <form id="deleteTargetForm">
+          <h2 id="deleteTargetTitle">删除网关会话？</h2>
+          <p id="deleteTargetName" class="delete-target-name"></p>
+          <p id="deleteTargetDescription">将从白名单移除，归档本地消息和会话状态，并解除此会话的通知订阅及动态绑定。不会退出 QQ 群、删除好友，也不会销毁 WorkBuddy 历史或共享工作区。以后可重新添加为新会话。</p>
+          <p id="deleteTargetStatus" class="form-status" role="status" aria-live="polite"></p>
+          <div class="delete-target-actions"><button id="cancelDeleteTargetButton" class="button ghost" type="button" autofocus>取消</button><button id="confirmDeleteTargetButton" class="button danger" type="submit">删除网关会话</button></div>
+        </form>
+      </dialog>
 
       <section id="qzonePanel" class="sticker-gallery panel" aria-labelledby="qzoneTitle" hidden>
         <header class="gallery-heading">

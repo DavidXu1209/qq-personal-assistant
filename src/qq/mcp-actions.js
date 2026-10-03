@@ -1,4 +1,5 @@
 import { QQ_FACE_ALIASES } from "./file-directive.js";
+import { searchReactions } from "./reaction-search.js";
 
 const STICKER_ID = /^st_[a-f0-9]{12,64}$/u;
 const QQ_ID = /^\d{5,14}$/u;
@@ -58,11 +59,8 @@ export function handleQqMcpTool({ name, args = {}, context, queued = [] }) {
   }
   if (name === "list_reactions") {
     if (!context.allowReactions) return failure("当前轮次不可读取 QQ 表情清单。");
-    return success({
-      faces: Object.keys(QQ_FACE_ALIASES),
-      stickers: (context.stickers || []).filter((item) => STICKER_ID.test(String(item?.id || "")) && item?.usage)
-        .map(({ id, usage }) => ({ id, usage }))
-    });
+    try { return success(searchReactions(context.stickers, Object.keys(QQ_FACE_ALIASES), args)); }
+    catch (error) { return failure(error.message); }
   }
   if (name === "send_reaction") {
     if (context.requireRead && !context.readCalled) return failure("请先调用 read_messages 读取本轮消息。");
