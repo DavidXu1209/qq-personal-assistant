@@ -77,7 +77,7 @@ export class GroupWorker {
   kick(groupId) {
     const id = String(groupId);
     if (!this.canRun(id)) return Promise.resolve();
-    if (this.store.rateLimitUntil(id) > Date.now()) return Promise.resolve();
+    if (this.store.rateLimitUntil(id) > Date.now() && this.store.snapshot(id).pendingTrigger?.reason !== "control") return Promise.resolve();
     if (this.qzoneReservations.has(id) && !this.olderChatPermits.has(id)) return this.qzoneReservations.get(id);
     if (this.running.has(id)) return this.running.get(id);
     if (this.taskGate?.blocked) {

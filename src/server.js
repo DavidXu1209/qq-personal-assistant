@@ -2,9 +2,12 @@ import { createServer } from "node:http";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MacActionClient } from "./automation/macos-actions.js";
+import { ICloudCalDavClient } from "./automation/icloud-caldav.js";
+import { QqReminderScheduler } from "./automation/qq-reminder-scheduler.js";
+import { isPersonalCommand } from "./automation/personal-commands.js";
 import { CodexClient } from "./codex/client.js";
 import { WorkBuddyClient } from "./workbuddy/client.js";
 import { PersonaStore } from "./persona/persona-store.js";
@@ -39,6 +42,7 @@ import { resolvePersonaFiles, validateRuntimeConfig } from "./security/runtime-c
 const sourceDir = fileURLToPath(new URL(".", import.meta.url));
 const projectDir = resolve(sourceDir, "..");
 const publicDir = join(projectDir, "modules", "web-console", "public");
+const personalMode = process.env.CODEX_REMOTE_CONTACT_PERSONAL_MODE === "1";
 const runtimeDir = process.env.CODEX_REMOTE_CONTACT_RUNTIME_DIR || join(projectDir, "runtime");
 const dataDir = process.env.CODEX_REMOTE_CONTACT_DATA_DIR || join(runtimeDir, "qq-only-data");
 const sharedDataDir = process.env.CODEX_REMOTE_CONTACT_SHARED_DATA_DIR || join(projectDir, "data");
@@ -50,6 +54,7 @@ const agentDispatchStorePath = join(dataDir, "agent-dispatch.json");
 const stickerStorePath = join(dataDir, "stickers.json");
 const stickerLabelSettingsPath = join(dataDir, "sticker-label-settings.json");
 const stickerCurationPath = join(dataDir, "sticker-curation.json");
+const qqReminderPath = join(dataDir, "qq-reminders.json");
 const qzoneStorePath = join(dataDir, "qzone.json");
 const personaOwnerStylePath = join(dataDir, "persona-owner-style.json");
 const personaStyleSamplesPath = join(dataDir, "persona-style-samples.json");
@@ -86,7 +91,7 @@ const allowedGroups = targetAllowlist.list("group");
 
 // 引擎选择：默认换成 WorkBuddy，可用 CODEX_REMOTE_CONTACT_ENGINE=codex 回退。
 // 传输层（QQ 队列 / 订阅 / 投递确认 / UI 状态）两者共用，接口同构。
-const engineKind = String(process.env.CODEX_REMOTE_CONTACT_ENGINE || "workbuddy").toLowerCase() === "codex"
+const engineKind = String(process.env.CODEX_REMOTE_CONTACT_ENGINE || (process.platform === "win32" ? "codex" : "workbuddy")).toLowerCase() === "codex"
   ? "codex"
   : "workbuddy";
 const WORKBUDDY_DEFAULT_MODEL = process.env.CODEX_REMOTE_CONTACT_WB_MODEL || "auto";
@@ -135,14 +140,20 @@ const defaultCodexConfig = {
     ? normalizeWorkBuddyContextLimit(codexAutoCompactTokenLimit || 200_000)
     : (codexAutoCompactTokenLimit || 200_000),
   workingMode: "agent",
-  permissionMode: "workspaceWrite",
-  calendarRemindersEnabled: false
+  permissionMode: personalMode ? "readOnly" : "workspaceWrite",
+  calendarRemindersEnabled: personalMode
 };
 const codexExecutableArgs = codexAutoCompactTokenLimit == null ? [] : [
   "-c", `model_auto_compact_token_limit=${codexAutoCompactTokenLimit}`,
   "-c", `model_auto_compact_token_limit_scope=${JSON.stringify(codexAutoCompactTokenScope)}`
 ];
 const periodicTriggerMinutes = Math.max(1, Number(settings.qq?.triggerPolicy?.periodicMinutes || 10));
+if (personalMode) {
+  for (const feature of ["shell_tool", "unified_exec", "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use", "code_mode_host"]) {
+    codexExecutableArgs.push("-c", `features.${feature}=false`);
+  }
+  for (const name of ["cua_repl", "windows-mcp", "node_repl"]) codexExecutableArgs.push("-c", `mcp_servers.${name}.enabled=false`);
+}
 const qzoneScheduleTimes = String(process.env.CODEX_REMOTE_CONTACT_QZONE_POST_SCHEDULE || process.env.CODEX_REMOTE_CONTACT_QQ_SCHEDULE
   || (settings.qq?.qzonePostSchedule || settings.qq?.triggerPolicy?.schedule || ["08:00", "12:00", "18:00"]).join(","))
   .split(",")
@@ -229,7 +240,7 @@ const fileManager = new QqFileManager({
 });
 // QQ may still be booting. Staging cleanup must not prevent the panel from
 // starting; retry later and share the same initialization with outbound jobs.
-const initializeFileStaging = () => fileManager.init().catch((error) => {
+const initializeFileStaging = () => personalMode ? Promise.resolve() : fileManager.init().catch((error) => {
   console.warn(`QQ file staging initialization deferred: ${error.message}`);
 });
 await initializeFileStaging();
@@ -263,7 +274,7 @@ const codex = engineKind === "codex"
   ? new CodexClient({
       executable: codexExecutable,
       executableArgs: codexExecutableArgs,
-      cwd: projectDir,
+      cwd: personalMode ? join(runtimeDir, "personal-agent") : projectDir,
       model: codexModel,
       effort: codexEffort,
       timeoutMs: agentTimeoutMs
@@ -282,6 +293,12 @@ let codexModels = engineKind === "workbuddy"
   ? fallbackWorkBuddyModels(codexModel, codexEffort)
   : fallbackCodexModels(codexModel, codexEffort);
 const automationClient = new MacActionClient();
+const personalAutomationClient = process.platform === "win32"
+  ? new ICloudCalDavClient({ username: process.env.ICLOUD_USERNAME, password: process.env.ICLOUD_APP_PASSWORD })
+  : automationClient;
+const groupAutomationClient = process.platform === "win32" ? null : automationClient;
+const reminderScheduler = new QqReminderScheduler({ filePath: qqReminderPath, oneBot, ownerId: OWNER_QQ_ID, onEvent: recordEvent });
+await reminderScheduler.init();
 const stickerLabeler = new EphemeralStickerLabeler({
   codex,
   stickerManager,
@@ -306,7 +323,7 @@ const dailyStyle = new DailyStyleCoordinator({
 });
 await dailyStyle.init();
 const worker = new GroupWorker({
-  store, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager, subscriptionStore, automationClient, persona: personaStore,
+  store, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager, subscriptionStore, automationClient: groupAutomationClient, persona: personaStore,
   targetNameResolver: (groupId) => groupMetadata[groupId]?.groupName || null,
   sharedWorkspaceRoot: groupWorkspaceRoot,
   taskGate,
@@ -314,12 +331,13 @@ const worker = new GroupWorker({
   onEvent: recordEvent
 });
 const privateWorker = new PrivateWorker({
-  store: privateStore, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager: privateTriggerManager, subscriptionStore, automationClient, persona: personaStore,
+  store: privateStore, codex, oneBot, mediaManager, fileManager, stickerManager, stickerLabeler, triggerManager: privateTriggerManager, subscriptionStore, automationClient: personalAutomationClient, reminderScheduler, persona: personaStore,
   targetNameResolver: (userId) => privateMetadata[userId]?.displayName || null,
   taskGate,
   canRun: (id) => agentDispatchStore.isEnabled() && !targetAllowlist.isRemoved("private", id) && !removingTargets.has(`private:${id}`),
   onEvent: recordEvent
 });
+privateWorker.personalStatus = personalStatus;
 const qzone = new QzoneCoordinator({
   store: qzoneStore, oneBot, fileManager, groupStore: store, privateStore,
   groupWorker: worker, privateWorker, scheduleTimes: qzoneScheduleTimes,
@@ -338,7 +356,8 @@ await stickerCuration.init();
 triggerManager.setWorker(worker);
 privateTriggerManager.setWorker(privateWorker);
 triggerManager.start();
-qzone.start();
+if (!personalMode) qzone.start();
+reminderScheduler.start();
 
 const threadReservations = new ThreadReservationManager({
   codex,
@@ -347,8 +366,8 @@ const threadReservations = new ThreadReservationManager({
   onChange: () => broadcast({ type: "thread-reservations", state: publicState() })
 });
 await threadReservations.start();
-stickerCuration.start();
-dailyStyle.start();
+if (!personalMode) stickerCuration.start();
+if (!personalMode) dailyStyle.start();
 
 const seenMessages = new Map();
 const seenTtlMs = 10 * 60 * 1000;
@@ -417,6 +436,10 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, publicState());
+    return;
+  }
+  if (personalMode && req.method === "GET" && url.pathname === "/api/personal/status") {
+    sendJson(res, 200, { status: await personalStatus() });
     return;
   }
   const diagnosticsMatch = /^\/api\/qq\/(groups|private)\/(\d+)\/diagnostics$/u.exec(url.pathname);
@@ -771,6 +794,7 @@ async function handleApi(req, res, url) {
 }
 
 async function handleOneBotEvent(payload) {
+  if (personalMode && String(payload?.self_id || "") !== AGENT_QQ_ID) return { status: "ignored", reason: "Unexpected bot account" };
   if (isGroupPokeEvent(payload)) return handleGroupPoke(payload);
   if (payload?.post_type === "notice" && ["group_recall", "friend_recall"].includes(payload?.notice_type)) {
     return handleMessageRecall(payload);
@@ -963,7 +987,7 @@ async function handlePrivateMessage(payload) {
   await dailyStyle.capture(payload, stored).catch((error) => console.warn(`OWNER style capture failed: ${error.message}`));
   if (targetAllowlist.isRemoved("private",message.senderId) || removingTargets.has(`private:${message.senderId}`)) return {status:"ignored",reason:"Conversation was removed"};
   recordEvent({ type: "private-message", userId: stored.senderId, message: stored, at: new Date().toISOString() });
-  const control = parseOwnerControlCommand(stored);
+  const control = parseOwnerControlCommand(stored) || (personalMode && stored.senderId === OWNER_QQ_ID && isPersonalCommand(stored));
   if (control) await privateTriggerManager.request(stored.senderId, "control", stored);
   else {
     if (collectedStickers.some((sticker) => sticker.labelStatus !== "ready")) {
@@ -1074,6 +1098,30 @@ async function appendUiOwnerMessage(targetType, targetId, text) {
   if (control) await manager.request(targetId, "control", message);
   else await manager.request(targetId, "mention", message);
   return message;
+}
+
+async function personalStatus() {
+  const lines = ["网关：运行中", `处理开关：${agentDispatchStore.isEnabled() ? "开启" : "暂停"}`];
+  try {
+    const [login, state] = await Promise.all([oneBot.getLoginInfo(), oneBot.getStatus()]);
+    const account = String(login.data?.user_id || "");
+    lines.push(account !== AGENT_QQ_ID ? "QQ：账号不匹配，请登录机器人小号" : state.data?.online === false ? "QQ：小号已离线" : `QQ：接口已连接，小号 ${account}`);
+  } catch { lines.push("QQ：接口未连接，请检查小号登录及 QQ 桥运行状态"); }
+  const conversation = privateStore.snapshot(OWNER_QQ_ID);
+  const resumeAt = privateStore.rateLimitUntil(OWNER_QQ_ID);
+  lines.push(`Codex：${codexModel}；${resumeAt > Date.now() ? "额度暂不可用，恢复时间 " + new Date(resumeAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "未记录有效的额度限制（不代表剩余额度已查询）"}`);
+  if (conversation.lastError) lines.push("最近处理错误：" + String(conversation.lastError).slice(0, 300));
+  const queued = reminderScheduler.items.filter(item => item.status === "pending");
+  lines.push(`待发提醒：${queued.length}；已到期 ${queued.filter(item => Date.parse(item.reminderAt) <= Date.now()).length}`);
+  const failedSend = queued.find(item => item.lastError);
+  if (failedSend) lines.push(`最近提醒发送失败：${failedSend.title}；会继续重试`);
+  lines.push(`iCloud：${process.env.ICLOUD_USERNAME && process.env.ICLOUD_APP_PASSWORD ? "专用凭据已配置，实际同步以每条事项结果为准" : "专用凭据未配置"}`);
+  const failedCalendar = reminderScheduler.items.filter(item => item.calendarStatus === "failed").sort((a, b) => String(b.calendarUpdatedAt).localeCompare(String(a.calendarUpdatedAt)))[0];
+  if (failedCalendar) lines.push(`日历同步失败：${failedCalendar.title}；${failedCalendar.calendarError || "原因未知"}`);
+  lines.push("提醒管理命令不调用模型；电脑睡眠或关机时 QQ 服务会停止。");
+  let text = lines.join("\n");
+  for (const secret of [oneBotAccessToken, configuredApiToken, process.env.ICLOUD_APP_PASSWORD].filter(Boolean)) text = text.replaceAll(secret, "[已隐藏]");
+  return text;
 }
 
 function publicState() {
@@ -1598,7 +1646,7 @@ async function serveStatic(req, res, path) {
   const requested = path === "/" ? "/index.html" : path;
   const relative = normalize(decodeURIComponent(requested)).replace(/^([/\\])+/, "");
   const filePath = resolve(publicDir, relative);
-  if (filePath !== publicDir && !filePath.startsWith(`${publicDir}/`)) {
+  if (filePath !== publicDir && !filePath.startsWith(`${publicDir}${sep}`)) {
     sendJson(res, 403, { error: "Forbidden" });
     return;
   }
@@ -1638,6 +1686,7 @@ class HttpError extends Error {
 }
 
 async function shutdown() {
+  reminderScheduler.stop();
   triggerManager.stop();
   privateTriggerManager.stop();
   qzone.stop();

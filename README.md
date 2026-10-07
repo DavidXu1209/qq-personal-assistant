@@ -1,5 +1,7 @@
 # WorkBuddy QQ Agent 网关
 
+> Windows 本机 + Codex 的个人部署说明见 [Windows 本机部署](docs/WINDOWS_SETUP.md)。该路径需要单独运行 OneBot QQ 桥接程序；Mac / WorkBuddy 原部署流程保持原样。
+
 这是为 WorkBuddy 定制的 QQ Agent 网关，不是通用聊天机器人，也不是以 Codex 为主的接入器。把本机 WorkBuddy Agent 接入 QQ，每个群聊、私聊拥有独立持久会话；在网页里查看实时输出、调整模型与权限、管理通知订阅和表情包。
 
 本仓库独立发布，不是 GitHub fork。代码基于 [Epic0522/Codex-Remote-Contact](https://github.com/Epic0522/Codex-Remote-Contact) 扩展，默认引擎、MCP 工具、持久会话、权限与部署流程均围绕 WorkBuddy 设计；Codex 适配仅作为兼容路径保留，不代表两者功能完全一致。上游尚未声明许可证：公开源码不等同于已取得完整开源许可。见 [来源清单](docs/PROVENANCE.md) 和 [许可证说明](LICENSE-NOTICE.md)。

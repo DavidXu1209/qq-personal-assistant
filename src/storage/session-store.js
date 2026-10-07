@@ -376,7 +376,7 @@ export class SessionStore {
 
   async beginWork(groupId) {
     const group = this.ensureGroup(groupId);
-    if (this.rateLimitUntil(groupId) > this.clock().getTime()) return null;
+    if (this.rateLimitUntil(groupId) > this.clock().getTime() && group.pendingTrigger?.reason !== "control") return null;
     if (group.replyEnabled === false || group.busy || !group.pendingTrigger) return null;
     if (group.pendingMessages.length === 0 && group.pendingTrigger.reason !== "subscription_auto" && !group.failedDelivery) {
       // A stale wake can survive after its messages were cleared. Retire it here;
@@ -737,13 +737,13 @@ export class SessionStore {
     return processed;
   }
 
-  async completeControlWork(groupId, sequence, { reply = null } = {}) {
+  async completeControlWork(groupId, sequence, { reply = null, preserveError = false } = {}) {
     const group = this.ensureGroup(groupId);
     const processed = group.pendingMessages.filter((message) => message.sequence === sequence);
     group.pendingMessages = group.pendingMessages.filter((message) => message.sequence !== sequence);
     group.busy = false;
     group.processing = null;
-    group.lastError = null;
+    if (!preserveError) group.lastError = null;
     if (reply) group.lastReply = String(reply);
     group.lastActivityAt = this.nowIso();
     await this.save();

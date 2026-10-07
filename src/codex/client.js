@@ -51,9 +51,11 @@ export class CodexClient {
 
   async startProcess() {
     this.buffer = "";
+    const childEnv = { ...this.env, CODEX_REMOTE_CONTACT_QQ_AGENT_MODE: "1" };
+    for (const key of ["ICLOUD_USERNAME", "ICLOUD_APP_PASSWORD", "ONEBOT_ACCESS_TOKEN", "CODEX_REMOTE_CONTACT_API_TOKEN"]) delete childEnv[key];
     const child = spawn(this.executable, [...this.executableArgs, "--search", "app-server", "--listen", "stdio://"], {
       cwd: this.cwd,
-      env: { ...this.env, CODEX_REMOTE_CONTACT_QQ_AGENT_MODE: "1" },
+      env: childEnv,
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.child = child;
