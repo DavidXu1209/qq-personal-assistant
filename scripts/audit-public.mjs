@@ -21,7 +21,7 @@ for (const entry of entries) {
     || /(^|\/)\.env(?:\..*)?$/.test(path) && !path.endsWith(".example")) {
     errors.push(path+": forbidden deployment state");
   }
-  const data = execFileSync("git",["cat-file","blob",oid]);
+  const data = execFileSync("git",["cat-file","blob",oid], {maxBuffer:32*1024*1024});
   if (path.endsWith(".png")) {
     if (data.subarray(0,8).toString("hex") !== "89504e470d0a1a0a") { errors.push(path+": invalid PNG");continue; }
     for (let offset=8;offset+12<=data.length;) {
