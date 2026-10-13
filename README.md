@@ -117,6 +117,14 @@ Windows 实际部署中已验证 QQ 定时送达、iPhone 日历同步、去重�
 
 公开配置示例不包含个人 QQ 号、账户或密码。实际配置、Apple 加密凭据、聊天记录、登录状态、日志和运行数据不随源码发布。分享项目请分享仓库或源码 ZIP，不要打包整个本机运行目录。
 
+## 管理接口
+
+脚本和本机面板调用网关时，把长期令牌放在请求头里：`Authorization: Bearer <令牌>` 或 `X-Codex-Remote-Token`。不要把 `CODEX_REMOTE_CONTACT_API_TOKEN` 放进 URL，否则会进入浏览器历史、反向代理日志和 Referer。
+
+浏览器的实时连接（`EventSource`）和表情图片（`<img>`）无法自带请求头。控制台会先用请求头换一张临时令牌，默认 10 分钟有效，并且只能读取 `/api/qq/stream` 和表情图片。临时令牌过期后控制台会自动更换。
+
+跨域响应只反射本机控制台来源（`127.0.0.1`、`localhost`、`::1`，以及网关实际绑定的主机名），不再对任意网站返回 `Access-Control-Allow-Origin: *`。打包的 Mac 客户端从本地文件打开页面，来源是 `null` / `file://`，默认仍允许；不使用该客户端时可设 `CODEX_REMOTE_CONTACT_CORS_ALLOW_FILE_ORIGIN=0`。其他来源用逗号分隔的 `CODEX_REMOTE_CONTACT_CORS_ORIGINS` 追加。OneBot 事件上报仍可在 `/api/onebot/event` 上使用请求头、`X-Signature` 或 URL 中的 `access_token`，因为部分桥接只能把令牌写在上报地址里。
+
 ## 来源与许可
 
 此版本在 [DrivingGodJ/workbuddy-qq-agent-gateway](https://github.com/DrivingGodJ/workbuddy-qq-agent-gateway) 基础上增加 Windows / Codex 个人助理与 iCloud CalDAV 功能；更早代码来源包括 [Epic0522/Codex-Remote-Contact](https://github.com/Epic0522/Codex-Remote-Contact)。保留原作者署名及来源说明。
