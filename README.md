@@ -7,6 +7,7 @@
 - [下载源码 ZIP](https://github.com/DavidXu1209/qq-personal-assistant/archive/refs/heads/main.zip)
 - [项目主页](https://github.com/DavidXu1209/qq-personal-assistant)
 - [Windows 配置与启动说明](docs/WINDOWS_SETUP.md)
+- [Windows 服务器 + Gemini 部署（中文）](docs/windows-deploy.zh-CN.md)
 - [扫码登录、日历授权和使用步骤](docs/USER_ACTIONS.md)
 
 这是源码下载，不是一键安装包。需要自行准备 Node.js、Codex 和兼容 OneBot 的 QQ 桥接程序（如 NapCat）。每位使用者需要配置自己的账号和凭据，不会连接作者的机器人或使用作者的模型额度。

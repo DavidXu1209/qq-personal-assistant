@@ -1,6 +1,6 @@
 # Windows 本机部署
 
-这是 Windows / Codex 个人助理部署路径。电脑需要开机、联网，且网关与 OneBot QQ 桥接都在运行，机器人才能实时回复。需要用户参与的步骤见 [USER_ACTIONS.md](USER_ACTIONS.md)。本机已配置时，使用根目录的 CMD 入口；`04-status.cmd` 可查询服务状态。
+这是 Windows / Codex 个人助理部署路径。电脑需要开机、联网，且网关与 OneBot QQ 桥接都在运行，机器人才能实时回复。需要用户参与的步骤见 [USER_ACTIONS.md](USER_ACTIONS.md)。本机已配置时，使用根目录的 CMD 入口；`04-status.cmd` 可查询服务状态。通过 UU 远程、在工作日白天开机的 Windows 服务器上用 Gemini 部署时，按 [windows-deploy.zh-CN.md](windows-deploy.zh-CN.md) 操作。
 
 ## 前置条件
 
