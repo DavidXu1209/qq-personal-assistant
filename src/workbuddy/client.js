@@ -484,6 +484,16 @@ export class WorkBuddyClient {
     return [...this.activeByGroup.keys()];
   }
 
+  capabilities() {
+    return {
+      systemPrompt: this.supportsSystemPrompt === true,
+      qqMcp: this.supportsQqMcp === true,
+      deleteThread: true,
+      persistentThreads: true,
+      streaming: true
+    };
+  }
+
   async listModels() {
     await this.ensureProcess();
     const response = await this.request("model/list", {}, 30_000);

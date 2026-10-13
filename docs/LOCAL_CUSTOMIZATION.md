@@ -14,6 +14,7 @@
 | AI 昵称与固定口头禅 | 网关面板“人格” | 昵称从下一条消息 / 下一轮模型生效；口头禅在下次上海时间 04:00 生效 |
 | 自动学习 OWNER 发言风格 | 网关在 `runtime/qq-only-data/persona-style-samples.json` 暂存样本 | 每天上海时间 04:00 总结后，所有持久会话下一轮共同生效 |
 | 通用人格模板 | `persona/core.json`、`examples.json` | 仅对未配置私人覆盖目录的部署生效 |
+| 仅 Gemini 的补充人格 | `GEMINI_PERSONA_FILE` 或 `GEMINI_PERSONA`；`GEMINI_PERSONA_MODE=append` 或 `replace` | 重启后生效。不设置时 Gemini 使用上面的共用系统提示词 |
 | QQ 工具与行为权限 | `src/qq`、`src/security` | 测试通过后重启 Hub |
 | WorkBuddy 桥与执行参数 | `src/workbuddy`、`modules/workbuddy-agent/bridge.py` | 测试通过后重启 Hub |
 | 日历 / 提醒事项动作 | `src/automation`、`scripts/macos-notification-action.js` | 相应脚本与权限检查生效 |

@@ -183,6 +183,16 @@ export class CodexClient {
     return [...this.activeByGroup.keys()];
   }
 
+  capabilities() {
+    return {
+      systemPrompt: false,
+      qqMcp: false,
+      deleteThread: false,
+      persistentThreads: true,
+      streaming: true
+    };
+  }
+
   async listModels() {
     await this.ensureProcess();
     const models = [];

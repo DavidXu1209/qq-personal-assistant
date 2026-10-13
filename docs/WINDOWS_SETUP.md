@@ -11,7 +11,7 @@
 ## 配置
 
 1. 将 `config/windows-personal.env.example` 复制为 `config/qq-only.env`。填入自己的 OWNER 与机器人 QQ 号、两个独立随机令牌（`ONEBOT_ACCESS_TOKEN`、`CODEX_REMOTE_CONTACT_API_TOKEN`）和 OneBot API 地址。管理面板绑定 `127.0.0.1` 并验证令牌；不要将管理面板或 OneBot API 暴露到公网。
-2. 登录 Codex CLI。启动脚本先查 PATH，再查当前 Windows 用户的 Codex 应用目录，并选择 Codex 引擎。
+2. 登录 Codex CLI。启动脚本先查 PATH，再查当前 Windows 用户的 Codex 应用目录，并在未改引擎时选择 Codex。若要避开 Codex 额度，把 `CODEX_REMOTE_CONTACT_ENGINE` 设为 `gemini`，并填写在 [Google AI Studio](https://aistudio.google.com/apikey) 创建的 `GEMINI_API_KEY`（可选 `GEMINI_MODEL`，默认 `gemini-3.8-flash`）。此时启动脚本不再要求本机 Codex。密钥不要提交到 Git。换引擎后，已有会话需发送「/新会话」。
 3. 运行 `powershell -ExecutionPolicy Bypass -File scripts/setup-windows-icloud.ps1`。按终端提示输入 Apple 账户和 App 专用密码，密码隐藏输入。Windows 用当前用户的 DPAPI 加密保存凭据，脚本不会将密码写入普通环境配置文件。
 4. 确认 QQ 桥接已登录机器人 QQ，并开放本机 OneBot HTTP API；将事件上报地址设为 `http://127.0.0.1:3789/api/onebot/event`，API 令牌与 `ONEBOT_ACCESS_TOKEN` 一致；事件上报令牌使用 `CODEX_REMOTE_CONTACT_API_TOKEN`。
 5. 运行 `powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1`。

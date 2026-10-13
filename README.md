@@ -1,6 +1,6 @@
 # QQ 个人 AI 助理
 
-通过 QQ 整理通知、提取事项、发送提醒，并同步到 iPhone 的 iCloud 日历。面向 Windows 10/11，使用本机已登录的 Codex 和独立 QQ 机器人小号。
+通过 QQ 整理通知、提取事项、发送提醒，并同步到 iPhone 的 iCloud 日历。面向 Windows 10/11，默认使用本机已登录的 Codex 和独立 QQ 机器人小号；Codex 额度不够时可以改用自己的 Gemini API 密钥。
 
 ## 下载
 
@@ -79,7 +79,46 @@ Copy-Item config/windows-personal.env.example config/qq-only.env
 
 使用自己的主号与独立机器人小号，填入空白配置示例后运行。提供启动、QQ 登录、iCloud 授权和状态查询四个入口；源码不含 QQ 登录软件或登录数据。可选 iCloud：不配置日历凭据仍可使用摘要和 QQ 本地提醒。
 
-此路径使用本机已登录的 Codex，不要求配置付费模型 API 密钥。每位使用者仍受自己的账户权益、额度和服务条款限制；不提供模型额度、不保证无限使用。
+此路径默认使用本机已登录的 Codex，不要求配置付费模型 API 密钥。每位使用者仍受自己的账户权益、额度和服务条款限制；不提供模型额度、不保证无限使用。
+
+### 10. 可选：改用 Gemini，不占用 Codex 额度
+
+在 `config/qq-only.env` 中把引擎换成 `gemini` 后，模型请求走 Google AI Studio 的 Gemini API，不再调用 Codex。QQ 队列、提醒和面板行为不变。
+
+1. 打开 [Google AI Studio](https://aistudio.google.com/apikey) 创建 API 密钥。密钥只放在本机已被 Git 忽略的 `config/qq-only.env`，不要提交，也不要发到聊天里。
+2. 写入：
+
+```text
+CODEX_REMOTE_CONTACT_ENGINE=gemini
+GEMINI_API_KEY=你的密钥
+# 可选。默认 gemini-3.8-flash
+# GEMINI_MODEL=gemini-3.8-flash
+```
+
+`CODEX_REMOTE_CONTACT_GEMINI_API_KEY` 和 `CODEX_REMOTE_CONTACT_GEMINI_MODEL` 是同样有效的别名。Mac 启动脚本会导出 `GEMINI_API_KEY`、`GEMINI_MODEL` 和 `GEMINI_API_BASE`。
+
+3. 重新启动。Windows 的 `scripts/start-windows.ps1` 在选择 gemini 时不再要求本机安装 Codex。
+
+Gemini 会在运行目录 `gemini-threads` 里保存持久会话编号，并用函数调用接入现有 QQ 工具。OWNER 私聊的事项提取仍要求结构化 JSON，网关才会保存提醒；模型自己说“已保存”不会生效。
+
+默认人格和固定说明与 WorkBuddy 相同，不另写一套。网关把 `PersonaStore.systemPromptForClient()` 设为系统提示词：其中有人格核心、口头禅、已发布的说话习惯，以及 `src/security/policy.js` 里的 QQ 网关固定规则。面板修改昵称、发布口头禅或每日风格总结后，下一轮会把更新后的同一段提示词交给 Gemini。没有系统提示词通道的 Codex 会把这些内容写进当轮消息；Gemini 不重复写进当轮消息。表情识别、表情筛选和每日风格总结用的临时会话仍然不带这段人格，和 WorkBuddy 一样。
+
+可选的 Gemini 专用补充只在设置了下面任意一项时生效，并在每次更新共用人格时重新套上。改文件或环境变量后需要重启网关。
+
+- `GEMINI_PERSONA`：一段直接写在环境变量里的补充文字。别名 `CODEX_REMOTE_CONTACT_GEMINI_PERSONA`。
+- `GEMINI_PERSONA_FILE`：一个 UTF-8 文本文件路径，例如被 Git 忽略的 `config/private/gemini-persona.txt`。别名 `CODEX_REMOTE_CONTACT_GEMINI_PERSONA_FILE`。文件不存在或是空的会拒绝启动。两项都填时，文件内容接在环境变量文字后面。
+- `GEMINI_PERSONA_MODE`：`append`（默认）把补充接在共用系统提示词后面；`replace` 只用补充文字，不再发送共用人格和网关固定规则。`replace` 必须同时提供文字或文件。别名 `CODEX_REMOTE_CONTACT_GEMINI_PERSONA_MODE`。
+
+`replace` 会拿掉系统提示词里的 QQ 工具规则。普通聊天仍会在当轮说明里要求使用工具，但完整规则需要自己写进补充文字。不设置这三项时，发给 Gemini 的系统提示词与发给 WorkBuddy 的字符串相同。
+
+限制：
+
+- 换引擎后不能续接原来的 Codex 或 WorkBuddy 会话。该会话需要发送「/新会话」。会话里留下的 `gpt-*` 模型名会被忽略，改用 `GEMINI_MODEL` 或默认的 `gemini-3.8-flash`。
+- Gemini 没有本机 shell、浏览器或整机操作。面板里的写入权限不会变成电脑控制。
+- 上下文过长时在本地丢弃最早的完整轮次，并沿用现有的压缩标记。这不是服务端缓存压缩。
+- 同一轮既要函数调用又要严格 JSON 时，只向模型声明工具；最终 JSON 靠提示词约束。OWNER 私聊事项提取没有 QQ 工具，会使用严格 JSON Schema。
+- 思考档位是 low、medium、high。其他档位会映射到这三档。
+- 用量、计费和数据保留遵循 Google AI Studio 的条款。本项目不提供密钥或额度。返回正文里如果没有网关能识别的重置时间，额度错误不会自动推迟重试。
 
 ## 使用示例
 
@@ -110,7 +149,7 @@ Windows 实际部署中已验证 QQ 定时送达、iPhone 日历同步、去重�
 - 去重按标题、时间和地点判断，不保证识别所有改写；发送瞬间崩溃等极端情况可能重复补发。
 - 个人助理每轮最多提取 8 个事项；合并转发展开最多 40 条，链接读取最多 3 个。大量材料需分批发送。
 - X 链接读取未完成真实验收，登录墙内容应提供正文；不提供主动监测 X 或周期性提醒。
-- 本版本不把图片识别列为已完成能力。模型用量取决于使用者自己的订阅，不能保证无限或免费调用。
+- 本版本不把图片识别列为已完成能力。模型用量取决于使用者自己的 Codex 订阅或 Gemini API 额度，不能保证无限或免费调用。
 - QQ 登录和接口可用性取决于所用桥接程序。便捷启动脚本目前对应固定的 NapCat 便携目录，其他版本按部署说明调整。
 
 ## 隐私
