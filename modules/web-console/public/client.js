@@ -54,6 +54,10 @@ let groupCandidatesLoading = false;
 let inputPreviewKey = "";
 let deletingTarget = null;
 let deleteTargetSaving = false;
+let browserGrant = { token: "", expiresAt: 0 };
+let grantRefreshTimer = null;
+let streamRecoveryTimer = null;
+let streamToken = "";
 const scrollState = new Map();
 
 async function api(path, options = {}) {
@@ -71,9 +75,39 @@ async function api(path, options = {}) {
   return body;
 }
 
+// EventSource and <img> cannot send Authorization. Exchange the long-lived
+// hub token for a short-lived read-only grant before putting anything in a URL.
+async function ensureBrowserGrant(force = false) {
+  const hubToken = localStorage.getItem("crc-hub-token") || "";
+  if (!hubToken) {
+    browserGrant = { token: "", expiresAt: 0 };
+    return "";
+  }
+  if (!force && browserGrant.token && browserGrant.expiresAt - Date.now() > 60_000) return browserGrant.token;
+  const issued = await api("/api/auth/browser-grant", { method: "POST", body: "{}" });
+  if (!issued.accessToken) {
+    browserGrant = { token: "", expiresAt: 0 };
+    return "";
+  }
+  browserGrant = {
+    token: String(issued.accessToken),
+    expiresAt: Date.parse(issued.expiresAt) || (Date.now() + Number(issued.expiresInMs || 0))
+  };
+  clearTimeout(grantRefreshTimer);
+  const delay = Math.max(5_000, browserGrant.expiresAt - Date.now() - 60_000);
+  grantRefreshTimer = setTimeout(() => {
+    ensureBrowserGrant(true).then(() => {
+      connectStream();
+      if (state) render();
+    }).catch(() => {});
+  }, delay);
+  return browserGrant.token;
+}
+
 async function refresh() {
   setConnection("正在连接", "neutral");
   try {
+    try { await ensureBrowserGrant(); } catch { /* header calls still work; the stream retries the grant */ }
     [state, maintenance] = await Promise.all([api("/api/state"), api("/api/maintenance")]);
     render();
     setConnection("已连接", "good");
@@ -247,10 +281,9 @@ function stickerTimestamp(item) {
 }
 
 function stickerImageUrl(id, version) {
-  const token = localStorage.getItem("crc-hub-token") || "";
   const parameters = new URLSearchParams();
   if (version) parameters.set("v", String(version));
-  if (token) parameters.set("access_token", token);
+  if (browserGrant.token) parameters.set("access_token", browserGrant.token);
   const query = parameters.toString();
   return `${HUB}/api/qq/stickers/${encodeURIComponent(id)}/image${query ? `?${query}` : ""}`;
 }
@@ -841,8 +874,15 @@ function setConnection(text, tone) {
 }
 
 function connectStream() {
-  if (!window.EventSource || stream) return;
-  const token = localStorage.getItem("crc-hub-token") || "";
+  if (!window.EventSource) return;
+  const token = browserGrant.token || "";
+  if (stream && streamToken === token) return;
+  if (stream) {
+    stream.onerror = null;
+    stream.close();
+    stream = null;
+  }
+  streamToken = token;
   const query = token ? `?access_token=${encodeURIComponent(token)}` : "";
   stream = new EventSource(`${HUB}/api/qq/stream${query}`);
   stream.onopen = () => setConnection("实时连接", "good");
@@ -862,7 +902,28 @@ function connectStream() {
       render();
     } else scheduleRefresh();
   };
-  stream.onerror = () => setConnection("实时连接重连中", "neutral");
+  stream.onerror = () => {
+    setConnection("实时连接重连中", "neutral");
+    if (streamRecoveryTimer) return;
+    streamRecoveryTimer = setTimeout(() => {
+      streamRecoveryTimer = null;
+      recoverStream().catch(() => {});
+    }, 2000);
+  };
+}
+
+async function recoverStream() {
+  if (!localStorage.getItem("crc-hub-token")) return;
+  const previous = browserGrant.token;
+  try {
+    await ensureBrowserGrant(true);
+  } catch {
+    return;
+  }
+  if (browserGrant.token && browserGrant.token !== previous) {
+    connectStream();
+    if (state) render();
+  }
 }
 
 function scheduleRefresh() {

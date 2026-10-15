@@ -6,6 +6,8 @@
 - 不提交 runtime、data、私人环境文件、真实 plist、虚拟环境和会话映射，不上传部署目录压缩包。
 - “完全访问”可以读写电脑，不仅是发文件；不要对陌生群启用。
 - 不把 QQ 桥、VNC 或管理面板直接映射到公网，不配置无密码远程桌面。
+- 管理接口的长期令牌只放在 `Authorization: Bearer` 或 `X-Codex-Remote-Token` 请求头。控制台实时流和表情图片使用短期只读临时令牌，不要把长期令牌写进 URL。
+- 跨域响应只反射本机控制台来源，可用 `CODEX_REMOTE_CONTACT_CORS_ORIGINS` 追加。不用打包的 Mac 文件客户端时，将 `CODEX_REMOTE_CONTACT_CORS_ALLOW_FILE_ORIGIN=0`。
 - 输出脱敏和沙箱不能保证防住所有恶意输入，高敏感任务应在独立账户或专用机器运行。
 - 发布前运行 npm run audit:public，并人工检查图片；自动检查不能代替人工审阅。
 

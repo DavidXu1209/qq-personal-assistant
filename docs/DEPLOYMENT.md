@@ -4,7 +4,9 @@
 
 网关默认 127.0.0.1:3789，OneBot API 默认 127.0.0.1:3000。容器 localhost 不是 Mac，应配置桥可达的宿主机地址和端口转发，并保持回调令牌或签名验证。
 
-回调支持 Authorization Bearer、配置令牌和 X-Signature HMAC-SHA1。不同桥对反向连接、host 网络和上报格式支持不同，需单独核验。
+回调支持 Authorization Bearer、`X-Codex-Remote-Token`、`X-Signature` HMAC-SHA1，以及仅在 `/api/onebot/event` 上的 `access_token` 查询参数。不同桥对反向连接、host 网络和上报格式支持不同，需单独核验。管理接口的长期令牌不接受查询参数；面板的实时流和表情图片改用短期只读临时令牌。
+
+跨域默认允许 `http://127.0.0.1:<端口>`、`http://localhost:<端口>`、`http://[::1]:<端口>`、网关绑定主机名，以及 Mac 客户端的 `null` / `file://` 来源。追加来源使用 `CODEX_REMOTE_CONTACT_CORS_ORIGINS`（逗号分隔，`*` 会被忽略）。`CODEX_REMOTE_CONTACT_CORS_ALLOW_FILE_ORIGIN=0` 可关闭文件来源。`CODEX_REMOTE_CONTACT_BROWSER_GRANT_TTL_MS` 调整临时令牌寿命，默认 600000，范围 60000–3600000。
 
 ## 上传与清理
 

@@ -10,10 +10,10 @@
 
 ## 配置
 
-1. 将 `config/windows-personal.env.example` 复制为 `config/qq-only.env`。填入自己的 OWNER 与机器人 QQ 号、两个独立随机令牌（`ONEBOT_ACCESS_TOKEN`、`CODEX_REMOTE_CONTACT_API_TOKEN`）和 OneBot API 地址。管理面板绑定 `127.0.0.1` 并验证令牌；不要将管理面板或 OneBot API 暴露到公网。
+1. 将 `config/windows-personal.env.example` 复制为 `config/qq-only.env`。填入自己的 OWNER 与机器人 QQ 号、两个独立随机令牌（`ONEBOT_ACCESS_TOKEN`、`CODEX_REMOTE_CONTACT_API_TOKEN`）和 OneBot API 地址。管理面板绑定 `127.0.0.1` 并验证令牌；调用管理接口时把令牌放在 `Authorization: Bearer` 或 `X-Codex-Remote-Token` 请求头，不要写进 URL。不要将管理面板或 OneBot API 暴露到公网。
 2. 登录 Codex CLI。启动脚本先查 PATH，再查当前 Windows 用户的 Codex 应用目录，并选择 Codex 引擎。
 3. 运行 `powershell -ExecutionPolicy Bypass -File scripts/setup-windows-icloud.ps1`。按终端提示输入 Apple 账户和 App 专用密码，密码隐藏输入。Windows 用当前用户的 DPAPI 加密保存凭据，脚本不会将密码写入普通环境配置文件。
-4. 确认 QQ 桥接已登录机器人 QQ，并开放本机 OneBot HTTP API；将事件上报地址设为 `http://127.0.0.1:3789/api/onebot/event`，API 令牌与 `ONEBOT_ACCESS_TOKEN` 一致；事件上报令牌使用 `CODEX_REMOTE_CONTACT_API_TOKEN`。
+4. 确认 QQ 桥接已登录机器人 QQ，并开放本机 OneBot HTTP API；将事件上报地址设为 `http://127.0.0.1:3789/api/onebot/event`，API 令牌与 `ONEBOT_ACCESS_TOKEN` 一致；事件上报令牌使用 `CODEX_REMOTE_CONTACT_API_TOKEN`。优先用请求头或 `X-Signature` 传递上报令牌。只有桥接无法设置请求头时，才把 `access_token` 放在这条上报地址上。
 5. 运行 `powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1`。
 
 网关会把 OWNER 私聊中的文字、转发消息和公开链接交给 Codex 摘要；明确事项先排入本地 QQ 提醒队列，再尝试写入 iCloud「QQ提醒」日历，分别报告实际结果。日期没有时刻时使用当天 09:00；有开始时间时 QQ 提前 10 分钟提醒。

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -37,6 +38,7 @@ import { StickerLabelSettingsStore } from "./storage/sticker-label-settings-stor
 import { QzoneStore } from "./qq/qzone-store.js";
 import { SubscriptionStore } from "./storage/subscription-store.js";
 import { TargetAllowlistSettings } from "./storage/target-allowlist-settings.js";
+import { createHttpAccess } from "./security/http-access.js";
 import { resolvePersonaFiles, validateRuntimeConfig } from "./security/runtime-config.js";
 
 const sourceDir = fileURLToPath(new URL(".", import.meta.url));
@@ -80,6 +82,16 @@ const oneBotCallbackToken = configuredApiToken || oneBotAccessToken;
 const oneBotBaseUrl = process.env.ONEBOT_API_BASE || "http://127.0.0.1:3000";
 validateRuntimeConfig({ ownerId: OWNER_QQ_ID, botId: AGENT_QQ_ID, host: hubHost,
   authDisabled, apiToken, oneBotToken: oneBotAccessToken });
+const httpAccess = createHttpAccess({
+  apiToken,
+  oneBotTokens: [oneBotAccessToken, oneBotCallbackToken],
+  host: hubHost,
+  port: hubPort,
+  extraOrigins: process.env.CODEX_REMOTE_CONTACT_CORS_ORIGINS || "",
+  allowFileOrigin: process.env.CODEX_REMOTE_CONTACT_CORS_ALLOW_FILE_ORIGIN,
+  grantTtlMs: process.env.CODEX_REMOTE_CONTACT_BROWSER_GRANT_TTL_MS
+});
+const requestContext = new AsyncLocalStorage();
 const codexExecutable = process.env.CODEX_CLI_PATH || [
   "/Applications/ChatGPT.app/Contents/Resources/codex",
   "/Applications/Codex.app/Contents/Resources/codex"
@@ -402,18 +414,20 @@ const groupMetadataTimer = setInterval(() => {
 }, 10 * 60 * 1000);
 groupMetadataTimer.unref?.();
 
-const server = createServer(async (req, res) => {
-  try {
-    const url = requestUrl(req);
-    if (url.pathname.startsWith("/api/")) {
-      await handleApi(req, res, url);
-      return;
+const server = createServer((req, res) => {
+  requestContext.run({ req }, async () => {
+    try {
+      const url = requestUrl(req);
+      if (url.pathname.startsWith("/api/")) {
+        await handleApi(req, res, url);
+        return;
+      }
+      await serveStatic(req, res, url.pathname);
+    } catch (error) {
+      if (!res.headersSent) sendJson(res, error.statusCode || 500, { error: String(error?.message || error) });
+      else res.end();
     }
-    await serveStatic(req, res, url.pathname);
-  } catch (error) {
-    if (!res.headersSent) sendJson(res, error.statusCode || 500, { error: String(error?.message || error) });
-    else res.end();
-  }
+  });
 });
 
 server.listen(hubPort, hubHost, () => console.log(`codexremotecontact QQ Agent gateway: http://${hubHost}:${hubPort}`));
@@ -432,6 +446,14 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && !String(req.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
     sendJson(res, 415, { error: "Content-Type must be application/json" });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/browser-grant") {
+    if (!apiToken) {
+      sendJson(res, 200, { authRequired: false, accessToken: "", expiresAt: null, expiresInMs: 0, tokenType: "browser-grant" }, { "cache-control": "no-store" });
+      return;
+    }
+    sendJson(res, 200, { authRequired: true, ...httpAccess.issueBrowserGrant({ headers: req.headers }) }, { "cache-control": "no-store" });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
@@ -1563,7 +1585,7 @@ function broadcast(payload) {
 }
 
 function openEventStream(req, res) {
-  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", ...corsHeaders() });
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", connection: "keep-alive", ...corsHeaders() });
   res.write(`data: ${JSON.stringify({ type: "snapshot", state: publicState() })}\n\n`);
   sseClients.add(res);
   const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 20_000);
@@ -1584,25 +1606,22 @@ function rememberMessage(messageId) {
 }
 
 function isAuthorized(req, path, rawBody) {
+  let signatureOk = false;
   if (path === "/api/onebot/event") {
     const signature = String(req.headers["x-signature"] || "").trim();
     if (signature && oneBotCallbackToken && rawBody) {
       const expected = Buffer.from(`sha1=${createHmac("sha1", oneBotCallbackToken).update(rawBody).digest("hex")}`);
       const actual = Buffer.from(signature);
-      if (actual.length === expected.length && timingSafeEqual(actual, expected)) return true;
+      signatureOk = actual.length === expected.length && timingSafeEqual(actual, expected);
     }
-    return requestTokens(req).some((candidate) => candidate && [oneBotAccessToken, oneBotCallbackToken].includes(candidate));
   }
-  if (!apiToken) return true;
-  return requestTokens(req).includes(apiToken);
-}
-
-function requestTokens(req) {
-  const authorization = String(req.headers.authorization || "");
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || "";
-  const header = String(req.headers["x-codex-remote-token"] || "").trim();
-  const query = requestUrl(req).searchParams.get("access_token") || "";
-  return [bearer, header, query];
+  return httpAccess.authorize({
+    method: req.method,
+    path,
+    headers: req.headers,
+    searchParams: requestUrl(req).searchParams,
+    signatureOk
+  });
 }
 
 async function readRawBody(req) {
@@ -1625,13 +1644,13 @@ function parseJson(rawBody) {
   }
 }
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...corsHeaders() });
+function sendJson(res, status, body, extraHeaders = {}) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...corsHeaders(), ...extraHeaders });
   res.end(`${JSON.stringify(body, null, 2)}\n`);
 }
 
 function corsHeaders() {
-  return { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type, x-codex-remote-token, x-signature", "access-control-allow-methods": "GET, POST, OPTIONS" };
+  return httpAccess.corsHeaders(requestContext.getStore()?.req);
 }
 
 function requestUrl(req) {
