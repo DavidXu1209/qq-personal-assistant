@@ -36,6 +36,22 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     return;
   }
+  if (request.method === "model/list") {
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        data: [{
+          model: "test-model",
+          displayName: "Test",
+          hidden: false,
+          supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }]
+        }],
+        nextCursor: null
+      }
+    });
+    return;
+  }
   if (request.method === "thread/loaded/list") {
     send({ jsonrpc: "2.0", id: request.id, result: { data: [...threads], nextCursor: null } });
     return;

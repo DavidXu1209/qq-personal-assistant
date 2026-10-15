@@ -8,8 +8,7 @@ import { MacActionClient } from "./automation/macos-actions.js";
 import { ICloudCalDavClient } from "./automation/icloud-caldav.js";
 import { QqReminderScheduler } from "./automation/qq-reminder-scheduler.js";
 import { isPersonalCommand } from "./automation/personal-commands.js";
-import { CodexClient } from "./codex/client.js";
-import { WorkBuddyClient } from "./workbuddy/client.js";
+import { createEngineClient, normalizeWorkBuddyContextLimit, resolveEngineProfile } from "./engines/factory.js";
 import { PersonaStore } from "./persona/persona-store.js";
 import { DailyStyleCoordinator } from "./persona/daily-style-coordinator.js";
 import { ThreadReservationManager } from "./codex/thread-reservations.js";
@@ -89,20 +88,10 @@ const settings = await loadSettings(settingsPath);
 const targetAllowlist = new TargetAllowlistSettings({ filePath: settingsPath, settings });
 const allowedGroups = targetAllowlist.list("group");
 
-// 引擎选择：默认换成 WorkBuddy，可用 CODEX_REMOTE_CONTACT_ENGINE=codex 回退。
-// 传输层（QQ 队列 / 订阅 / 投递确认 / UI 状态）两者共用，接口同构。
-const engineKind = String(process.env.CODEX_REMOTE_CONTACT_ENGINE || (process.platform === "win32" ? "codex" : "workbuddy")).toLowerCase() === "codex"
-  ? "codex"
-  : "workbuddy";
-const WORKBUDDY_DEFAULT_MODEL = process.env.CODEX_REMOTE_CONTACT_WB_MODEL || "auto";
-const looksLikeCodexModelName = (name) => /^(gpt-|o[0-9])/i.test(String(name || ""));
-const configuredModel = process.env.CODEX_REMOTE_CONTACT_CODEX_MODEL || settings.ai?.model || null;
-// 换引擎就换了模型命名空间：settings 里存的 gpt-* 在 WorkBuddy 上不存在，
-// 这种情况下退回 WorkBuddy 的默认模型（null 表示交给 CLI 自己选）。
-const codexModel = engineKind === "workbuddy"
-  ? (configuredModel && !looksLikeCodexModelName(configuredModel) ? configuredModel : WORKBUDDY_DEFAULT_MODEL)
-  : (configuredModel || "gpt-5.6-luna");
-const codexEffort = process.env.CODEX_REMOTE_CONTACT_REASONING_EFFORT || settings.ai?.reasoningEffort || "low";
+// 引擎由 CODEX_REMOTE_CONTACT_ENGINE 选择。QQ 队列、订阅、投递和面板共用同一套客户端方法。
+const engineProfile = resolveEngineProfile({ env: process.env, platform: process.platform, settings });
+const codexModel = engineProfile.model;
+const codexEffort = engineProfile.effort;
 const configuredAutoCompactTokenLimit = Number(process.env.CODEX_REMOTE_CONTACT_AUTO_COMPACT_TOKEN_LIMIT || settings.ai?.autoCompactTokenLimit || 0);
 const codexAutoCompactTokenLimit = Number.isFinite(configuredAutoCompactTokenLimit) && configuredAutoCompactTokenLimit > 0
   ? Math.max(10_000, Math.floor(configuredAutoCompactTokenLimit))
@@ -111,23 +100,7 @@ const configuredAutoCompactScope = String(process.env.CODEX_REMOTE_CONTACT_AUTO_
 const codexAutoCompactTokenScope = ["total", "body_after_prefix"].includes(configuredAutoCompactScope)
   ? configuredAutoCompactScope
   : "total";
-const contextTokenOptions = engineKind === "workbuddy"
-  ? [
-      { value: "auto", label: "自动 · 跟随模型", description: "由 WorkBuddy 按当前模型的上下文窗口自动压缩" },
-      { value: 100_000, label: "最短 · 100K", description: "WorkBuddy CLI 允许的最小压缩阈值" },
-      { value: 200_000, label: "轻量 · 200K", description: "较早压缩，适合日常对话" },
-      { value: 400_000, label: "平衡 · 400K", description: "保留较多近期细节" },
-      { value: 600_000, label: "较长 · 600K", description: "较长任务使用，单轮处理可能更慢" },
-      { value: 800_000, label: "长 · 800K", description: "长任务使用，可能增加耗时与用量" },
-      { value: 1_000_000, label: "最长 · 1M", description: "WorkBuddy CLI 允许的最大压缩阈值" }
-    ]
-  : [
-      { value: 32_000, label: "省量 · 32K", description: "更早压缩；压缩后的新增上下文按 32K 计量，不是总输入硬上限" },
-      { value: 64_000, label: "轻量 · 64K", description: "适合通知和日常对话；压缩后的新增上下文按 64K 计量" },
-      { value: 100_000, label: "精简 · 100K", description: "更早压缩，适合日常短对话" },
-      { value: 200_000, label: "平衡 · 200K", description: "保留更多近期细节，当前默认" },
-      { value: 400_000, label: "充足 · 400K", description: "更长历史，单轮处理可能更慢" }
-    ];
+const contextTokenOptions = engineProfile.contextTokenOptions;
 const permissionModeOptions = [
   { value: "readOnly", label: "只读分析", description: "可读取和分析，不修改文件或外部状态", targetTypes: ["group", "private"] },
   { value: "workspaceWrite", label: "工作区写入", description: "可在当前目标工作区内创建、修改和运行文件", targetTypes: ["group", "private"] },
@@ -136,9 +109,7 @@ const permissionModeOptions = [
 const defaultCodexConfig = {
   model: codexModel,
   reasoningEffort: codexEffort,
-  contextTokenLimit: engineKind === "workbuddy"
-    ? normalizeWorkBuddyContextLimit(codexAutoCompactTokenLimit || 200_000)
-    : (codexAutoCompactTokenLimit || 200_000),
+  contextTokenLimit: engineProfile.resolveContextTokenLimit(codexAutoCompactTokenLimit),
   workingMode: "agent",
   permissionMode: personalMode ? "readOnly" : "workspaceWrite",
   calendarRemindersEnabled: personalMode
@@ -211,7 +182,7 @@ const personaStore = new PersonaStore({
   ownerStylePath: personaOwnerStylePath
 });
 await personaStore.init();
-if (engineKind === "workbuddy") {
+if (engineProfile.migrateConversations) {
   await migrateWorkBuddyConversationConfigs(store);
   await migrateWorkBuddyConversationConfigs(privateStore);
 }
@@ -270,28 +241,19 @@ await stickerManager.retryPendingFavorites().catch((error) => {
 });
 
 const agentTimeoutMs = Number(process.env.CODEX_REMOTE_CONTACT_QQ_AGENT_TIMEOUT_MS || 10 * 60 * 1000);
-const codex = engineKind === "codex"
-  ? new CodexClient({
-      executable: codexExecutable,
-      executableArgs: codexExecutableArgs,
-      cwd: personalMode ? join(runtimeDir, "personal-agent") : projectDir,
-      model: codexModel,
-      effort: codexEffort,
-      timeoutMs: agentTimeoutMs
-    })
-  : new WorkBuddyClient({
-      // python / bridgePath 默认取 CODEX_REMOTE_CONTACT_WB_PYTHON 与模块内路径
-      cwd: projectDir,
-      model: codexModel,
-      effort: codexEffort,
-      systemPrompt: personaStore.systemPromptForClient(),
-      timeoutMs: agentTimeoutMs,
-      onTurnEvent: (event) => recordEvent({ ...event, at: new Date().toISOString() })
-    });
-console.log(`agent engine: ${engineKind} (model=${codexModel}, effort=${codexEffort})`);
-let codexModels = engineKind === "workbuddy"
-  ? fallbackWorkBuddyModels(codexModel, codexEffort)
-  : fallbackCodexModels(codexModel, codexEffort);
+const codex = createEngineClient(engineProfile, {
+  executable: codexExecutable,
+  executableArgs: codexExecutableArgs,
+  cwd: projectDir,
+  personalCwd: join(runtimeDir, "personal-agent"),
+  personalMode,
+  timeoutMs: agentTimeoutMs,
+  systemPrompt: personaStore.systemPromptForClient(),
+  threadsDir: join(runtimeDir, "gemini-threads"),
+  onTurnEvent: (event) => recordEvent({ ...event, at: new Date().toISOString() })
+});
+console.log(`agent engine: ${engineProfile.kind} (model=${codexModel}, effort=${codexEffort})`);
+let codexModels = engineProfile.fallbackModels(codexModel, codexEffort);
 const automationClient = new MacActionClient();
 const personalAutomationClient = process.platform === "win32"
   ? new ICloudCalDavClient({ username: process.env.ICLOUD_USERNAME, password: process.env.ICLOUD_APP_PASSWORD })
@@ -1109,7 +1071,8 @@ async function personalStatus() {
   } catch { lines.push("QQ：接口未连接，请检查小号登录及 QQ 桥运行状态"); }
   const conversation = privateStore.snapshot(OWNER_QQ_ID);
   const resumeAt = privateStore.rateLimitUntil(OWNER_QQ_ID);
-  lines.push(`Codex：${codexModel}；${resumeAt > Date.now() ? "额度暂不可用，恢复时间 " + new Date(resumeAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "未记录有效的额度限制（不代表剩余额度已查询）"}`);
+  const engineLabel = engineProfile.kind === "gemini" ? "Gemini" : "Codex";
+  lines.push(`${engineLabel}：${codexModel}；${resumeAt > Date.now() ? "额度暂不可用，恢复时间 " + new Date(resumeAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "未记录有效的额度限制（不代表剩余额度已查询）"}`);
   if (conversation.lastError) lines.push("最近处理错误：" + String(conversation.lastError).slice(0, 300));
   const queued = reminderScheduler.items.filter(item => item.status === "pending");
   lines.push(`待发提醒：${queued.length}；已到期 ${queued.filter(item => Date.parse(item.reminderAt) <= Date.now()).length}`);
@@ -1120,7 +1083,7 @@ async function personalStatus() {
   if (failedCalendar) lines.push(`日历同步失败：${failedCalendar.title}；${failedCalendar.calendarError || "原因未知"}`);
   lines.push("提醒管理命令不调用模型；电脑睡眠或关机时 QQ 服务会停止。");
   let text = lines.join("\n");
-  for (const secret of [oneBotAccessToken, configuredApiToken, process.env.ICLOUD_APP_PASSWORD].filter(Boolean)) text = text.replaceAll(secret, "[已隐藏]");
+  for (const secret of [oneBotAccessToken, configuredApiToken, process.env.ICLOUD_APP_PASSWORD, process.env.GEMINI_API_KEY, process.env.CODEX_REMOTE_CONTACT_GEMINI_API_KEY].filter(Boolean)) text = text.replaceAll(secret, "[已隐藏]");
   return text;
 }
 
@@ -1177,7 +1140,7 @@ function publicState() {
     persona: personaStore.publicState(),
     dailyStyle: dailyStyle.snapshot(),
     ai: {
-      provider: engineKind === "codex" ? "codex-app-server" : "workbuddy-agent-sdk",
+      provider: engineProfile.provider,
       model: codexModel,
       reasoningEffort: codexEffort,
       persistentThreads: true,
@@ -1381,13 +1344,6 @@ function validateCodexConfig(value, { targetType = "group" } = {}) {
   return { model, reasoningEffort, contextTokenLimit, workingMode, permissionMode, calendarRemindersEnabled };
 }
 
-function normalizeWorkBuddyContextLimit(value) {
-  if (value === "auto") return "auto";
-  const numeric = Number(value || 0);
-  if (!Number.isFinite(numeric) || numeric <= 0) return "auto";
-  return Math.min(1_000_000, Math.max(100_000, Math.floor(numeric)));
-}
-
 async function migrateWorkBuddyConversationConfigs(targetStore) {
   for (const conversation of targetStore.listGroups()) {
     const current = conversation.codexConfig || defaultCodexConfig;
@@ -1445,9 +1401,7 @@ async function refreshCodexModels() {
     }))
     .filter((item) => item.supportedReasoningEfforts.length);
   if (!normalized.some((item) => item.model === codexModel)) {
-    const fallback = engineKind === "workbuddy"
-      ? fallbackWorkBuddyModels(codexModel, codexEffort)
-      : fallbackCodexModels(codexModel, codexEffort);
+    const fallback = engineProfile.fallbackModels(codexModel, codexEffort);
     normalized.push(...fallback.filter((item) => item.model === codexModel));
   }
   if (normalized.length) codexModels = normalized;
@@ -1471,50 +1425,6 @@ async function ensureStickerLabelModelAvailable() {
     || codexModels.find((item) => item.isDefault)?.model
     || codexModels[0]?.model;
   if (fallback) await stickerLabelSettingsStore.setModel(fallback);
-}
-
-function fallbackCodexModels(currentModel, currentEffort) {
-  const entries = [
-    ["gpt-6-astra", "GPT-6 Astra", ["low", "medium", "high", "xhigh", "max", "ultra"]],
-    ["gpt-5.6-sol", "GPT-5.6 Sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
-    ["gpt-5.6-terra", "GPT-5.6 Terra", ["low", "medium", "high", "xhigh", "max", "ultra"]],
-    ["gpt-5.6-luna", "GPT-5.6 Luna", ["low", "medium", "high", "xhigh", "max"]],
-    ["gpt-5.5", "GPT-5.5", ["low", "medium", "high", "xhigh"]]
-  ];
-  if (!entries.some(([model]) => model === currentModel)) entries.unshift([currentModel, currentModel, [currentEffort]]);
-  return entries.map(([model, displayName, efforts]) => ({
-    model,
-    displayName,
-    description: "",
-    isDefault: model === currentModel,
-    defaultReasoningEffort: model === currentModel ? currentEffort : "low",
-    supportedReasoningEfforts: [...new Set([...efforts, ...(model === currentModel ? [currentEffort] : [])])]
-      .filter(Boolean)
-      .map((reasoningEffort) => ({ reasoningEffort, description: "" }))
-  }));
-}
-
-function fallbackWorkBuddyModels(currentModel, currentEffort) {
-  const models = [
-    "auto", "hy4-preview-f", "hy3", "hy3-x", "deepseek-v4.1-flash",
-    "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo",
-    "minimax-m3", "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "kimi-k2.6",
-    "deepseek-v4-pro", "hy4-preview"
-  ];
-  if (currentModel && !models.includes(currentModel)) models.unshift(currentModel);
-  const efforts = ["auto", "minimal", "low", "medium", "high", "xhigh", "max"];
-  return models.map((model) => ({
-    model,
-    displayName: model,
-    description: "WorkBuddy 当前账号模型目录的启动兜底；连接完成后会自动刷新",
-    isDefault: model === "auto",
-    defaultReasoningEffort: efforts.includes(currentEffort) ? currentEffort : "auto",
-    reasoningCapabilitySource: "workbuddy-cli-global",
-    supportedReasoningEfforts: efforts.map((reasoningEffort) => ({
-      reasoningEffort,
-      description: reasoningEffort === "auto" ? "不固定档位，由当前模型决定" : "WorkBuddy CLI 公开档位；模型不支持时可能自动忽略"
-    }))
-  }));
 }
 
 function referencedMedia() {

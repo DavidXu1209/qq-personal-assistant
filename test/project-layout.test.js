@@ -50,6 +50,25 @@ test("external environment remains an explicit override of the private env file"
   assert.match(exports, /CODEX_REMOTE_CONTACT_ENGINE='from-environment'/);
 });
 
+test("launchd env export keeps the Gemini key names and drops unrelated secrets", () => {
+  const exports = execFileSync(process.execPath, [join(project, "scripts/export-runtime-env.mjs")], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      GEMINI_API_KEY: "test-gemini-key",
+      GEMINI_MODEL: "gemini-3.8-flash",
+      GEMINI_PERSONA_FILE: "config/private/gemini-persona.txt",
+      GEMINI_PERSONA_MODE: "append",
+      UNRELATED_PRIVATE_DATA: "not-exported"
+    }
+  });
+  assert.match(exports, /export GEMINI_API_KEY='test-gemini-key'/);
+  assert.match(exports, /export GEMINI_MODEL='gemini-3.8-flash'/);
+  assert.match(exports, /export GEMINI_PERSONA_FILE='config\/private\/gemini-persona.txt'/);
+  assert.match(exports, /export GEMINI_PERSONA_MODE='append'/);
+  assert.doesNotMatch(exports, /UNRELATED_PRIVATE_DATA/);
+});
+
 test("missing private env is an error rather than an empty successful export", () => {
   const result = spawnSync(process.execPath, ["--env-file=" + join(project, "config/nonexistent-test.env"),
     join(project, "scripts/export-runtime-env.mjs")], { encoding: "utf8" });
